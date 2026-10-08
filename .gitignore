@@ -1,0 +1,17 @@
+# secrets and local data: never commit these (the repo is public)
+.env
+.env.*
+!.env.example
+*.db
+*.db-wal
+*.db-shm
+data/
+.venv/
+node_modules/
+dist/
+.vercel/
+__pycache__/
+*.log
+.DS_Store
+# saved earlier versions of the project and local test files
+versions/

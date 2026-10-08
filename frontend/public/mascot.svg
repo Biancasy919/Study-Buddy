@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+    <rect width="512" height="512" fill="#3db3ef"/>
+  <circle cx="256" cy="250" r="230" fill="#62c3f5"/>
+  <circle cx="256" cy="250" r="170" fill="#8bd3f9" opacity=".55"/>
+  <circle cx="90" cy="95" r="10" fill="#fff" opacity=".55"/><circle cx="430" cy="150" r="7" fill="#fff" opacity=".5"/><circle cx="455" cy="400" r="12" fill="#fff" opacity=".35"/><circle cx="62" cy="380" r="8" fill="#fff" opacity=".4"/>
+  <!-- floating paper plane -->
+  <g transform="translate(372 92) rotate(-14)">
+    <polygon points="0,30 86,0 62,66 40,44" fill="#fff"/>
+    <polygon points="40,44 62,66 46,52" fill="#bfe3f8"/>
+    <polygon points="0,30 40,44 86,0" fill="#dff1fc"/>
+  </g>
+  <!-- shadow -->
+  <ellipse cx="256" cy="452" rx="130" ry="20" fill="#1578a8" opacity=".25"/>
+  <!-- feet -->
+  <ellipse cx="205" cy="436" rx="38" ry="22" fill="#ffc83d"/><ellipse cx="307" cy="436" rx="38" ry="22" fill="#ffc83d"/>
+  <!-- body -->
+  <ellipse cx="256" cy="300" rx="158" ry="146" fill="#e3f2fc"/>
+  <ellipse cx="256" cy="288" rx="152" ry="136" fill="#ffffff"/>
+  <!-- arms -->
+  <ellipse cx="100" cy="332" rx="30" ry="46" transform="rotate(24 100 332)" fill="#fff"/>
+  <ellipse cx="412" cy="318" rx="30" ry="46" transform="rotate(-38 412 318)" fill="#fff"/>
+  <!-- book -->
+  <g transform="translate(300 352) rotate(-8)">
+    <rect x="0" y="0" width="92" height="64" rx="8" fill="#ff7a8a"/>
+    <rect x="8" y="6" width="76" height="52" rx="4" fill="#fff4f5"/>
+    <line x1="46" y1="6" x2="46" y2="58" stroke="#ff9aa6" stroke-width="4"/>
+    <line x1="16" y1="22" x2="38" y2="22" stroke="#ffc2c9" stroke-width="4" stroke-linecap="round"/>
+    <line x1="54" y1="22" x2="76" y2="22" stroke="#ffc2c9" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <!-- face -->
+  <ellipse cx="205" cy="290" rx="19" ry="26" fill="#1b2b3a"/><ellipse cx="307" cy="290" rx="19" ry="26" fill="#1b2b3a"/>
+  <circle cx="212" cy="279" r="8" fill="#fff"/><circle cx="314" cy="279" r="8" fill="#fff"/>
+  <circle cx="199" cy="299" r="4" fill="#fff" opacity=".8"/><circle cx="301" cy="299" r="4" fill="#fff" opacity=".8"/>
+  <ellipse cx="160" cy="330" rx="26" ry="16" fill="#ff9fb2" opacity=".75"/><ellipse cx="352" cy="330" rx="26" ry="16" fill="#ff9fb2" opacity=".75"/>
+  <path d="M232 326 Q256 356 280 326" fill="none" stroke="#1b2b3a" stroke-width="9" stroke-linecap="round"/>
+  <!-- graduation cap -->
+  <path d="M168 190 L168 238 Q256 282 344 238 L344 190 L256 226 Z" fill="#2d4256"/>
+  <polygon points="256,106 410,166 256,226 102,166" fill="#1b2b3a"/>
+  <polygon points="256,106 410,166 256,226 102,166" fill="none" stroke="#3a5470" stroke-width="3" stroke-linejoin="round"/>
+  <circle cx="256" cy="166" r="9" fill="#ffc83d"/>
+  <path d="M256 166 L376 188 L376 244" fill="none" stroke="#ffc83d" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="366" y="240" width="20" height="34" rx="8" fill="#ffc83d"/>
+</svg>
