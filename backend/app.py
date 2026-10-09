@@ -1078,8 +1078,11 @@ def handle_message(msg):
         code = text.split(maxsplit=1)[1].strip() if " " in text else ""
         plans = load()
         if code in plans:
-            update_plan(code, chat_id=chat, linked_at=time.time(), last_active=time.time())
-            p = plans[code]
+            p = db.link_chat(code, chat)
+            if not p:
+                send(chat, "🔒 That study plan is already connected to another Telegram account, so I can't link it here. "
+                           "Create your own plan on the website and tap its 'Open Telegram' button.")
+                return
             if p["kind"] == "biws":
                 biws_welcome(p)
                 return

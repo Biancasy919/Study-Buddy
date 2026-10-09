@@ -205,6 +205,24 @@ def update_plan(pid, **fields):
         return p
 
 
+def link_chat(pid, chat_id):
+    """Attach a plan to a Telegram chat, once. Returns the plan if this chat now owns it, or None if it is
+    missing or already belongs to a different chat (the first chat to claim a plan keeps it)."""
+    with tx() as t:
+        r = t.q("SELECT data FROM plans WHERE id=%s FOR UPDATE", (pid,))
+        if not r:
+            return None
+        p = _fix(json.loads(r[0]["data"]))
+        if p.get("chat_id") not in (None, chat_id):
+            return None
+        now = time.time()
+        if p.get("chat_id") is None:
+            p.update(chat_id=chat_id, linked_at=now)
+        p["last_active"] = now
+        t.x("UPDATE plans SET chat_id=%s, data=%s, updated=%s WHERE id=%s", (chat_id, json.dumps(p), now, pid))
+        return p
+
+
 def claim(pid, key, value):
     """Set plan[key]=value only if it isn't already that. True for the one caller that wins (stops double deliveries)."""
     with tx() as t:
