@@ -132,7 +132,7 @@ def ensure_schema():
 def _import_legacy():
     """Local only: bring in plans from the old single-file version (data/plans.json and data/materials)."""
     old = HERE.parent / "data" / "plans.json"
-    if not old.exists() or q("SELECT 1 AS a FROM plans LIMIT 1"):
+    if os.getenv("NO_LEGACY_IMPORT") or not old.exists() or q("SELECT 1 AS a FROM plans LIMIT 1"):
         return
     for pid, p in json.loads(old.read_text()).items():
         PLANS[pid] = p
@@ -282,6 +282,13 @@ def cache_clear(prefix):
 def first_time(update_id):
     """True the first time an update is seen. Telegram re-sends an update if we're slow to answer; this drops the repeat."""
     return x("INSERT INTO updates (update_id, at) VALUES (%s,%s) ON CONFLICT (update_id) DO NOTHING", (update_id, time.time())) == 1
+
+
+def once(key, ttl=30):
+    """True for the first caller within ttl seconds (a button tapped twice is handled once)."""
+    now = time.time()
+    return x("INSERT INTO counters (key, n, until) VALUES (%s,1,%s) ON CONFLICT (key) DO UPDATE SET n=1, until=excluded.until "
+             "WHERE counters.until < %s", (key, now + ttl, now)) == 1
 
 
 def prune(days=7):

@@ -511,7 +511,6 @@ def merge_feedback(plan, text):
 
 def handle_callback(cq):
     chat = cq["message"]["chat"]["id"]
-    tg("answerCallbackQuery", callback_query_id=cq["id"])
     plan = plan_for_chat(chat)
     data = cq.get("data", "")
     if plan and plan["kind"] == "biws" and data.startswith(("fmt:", "figs:", "bite:")):
@@ -522,6 +521,16 @@ def handle_callback(cq):
             send_figures(plan, int(parts[1]))
         elif parts[1] in FORMATS:
             send_guide_lesson(plan, int(parts[2]), parts[1])
+        return
+    if plan and data.startswith("quiz:"):
+        if plan.get("pending"):
+            send(chat, "Let's finish the current quiz first (or skip questions to leave it).")
+            return
+        tg("sendChatAction", chat_id=chat, action="typing")
+        try:
+            start_quiz(plan, int(data.split(":")[1]))
+        except Exception as e:
+            send(chat, "⚠️ Couldn't write the quiz just now" + quota_note(e) + ". Try again soon.")
         return
     if plan and data.startswith("moreq:"):
         start_extra(plan, int(data.split(":")[1]))
@@ -535,8 +544,9 @@ def handle_callback(cq):
         except Exception as e:
             send(chat, "⚠️ Couldn't write more just now" + quota_note(e) + ". Try again soon.")
             return
-        send(chat, f"📚 Going deeper: {unit['title']}\n\n{text}", {"inline_keyboard": [[
-            {"text": "📚 Even more", "callback_data": f"more:{idx}"}, {"text": "⚙️ Lesson settings", "callback_data": "set:menu"}]]})
+        send(chat, f"📚 Going deeper: {unit['title']}\n\n{text}", {"inline_keyboard": [
+            [{"text": "📝 Quiz me on this", "callback_data": f"quiz:{idx}"}],
+            [{"text": "📚 Even more", "callback_data": f"more:{idx}"}, {"text": "⚙️ Lesson settings", "callback_data": "set:menu"}]]})
         for ph in phrases:
             send_phrase_audio(chat, plan, ph)
         return
@@ -672,6 +682,18 @@ def grade_one(plan, unit, q, reply, tries=0):
     return {"correct": 1.0, "partly": 0.5}.get(d.get("verdict"), 0.0), d.get("feedback", ""), d.get("reveal") or q["answer"]
 
 
+def start_quiz(plan, idx=None):
+    """A quick quiz on the current topic (or on topic idx, from a lesson's Quiz button)."""
+    touch(plan["id"])
+    if idx is None:
+        idx = current_idx(plan)
+    idx %= len(plan["units"])
+    unit = plan["units"][idx]
+    qs = make_quiz(plan, unit)
+    send(plan["chat_id"], f"📝 Quick quiz: {unit['title']}\n\n{len(qs)} questions, one at a time. /skip to skip one.")
+    arm_quiz(plan, idx, qs)
+
+
 def start_extra(plan, idx, n=None):
     """Extra practice on one topic. Doesn't move the schedule forward."""
     if plan.get("pending"):
@@ -760,6 +782,7 @@ def warm_guide(plan, idx):
 def format_buttons(idx, cur, day):
     others = [k for k in FORMATS if k != cur]
     rows = [[{"text": FORMATS[k], "callback_data": f"fmt:{k}:{idx}"} for k in others[i:i + 2]] for i in range(0, len(others), 2)]
+    rows.append([{"text": "📝 Quiz me on this", "callback_data": f"quiz:{idx}"}])
     if cur != "full" and biws.day_info(day)["n_images"]:
         rows.append([{"text": "🖼 Show the guide's figures", "callback_data": f"figs:{idx}"}])
     return {"inline_keyboard": rows}
@@ -884,7 +907,8 @@ def clear_prefetch(pid):  # preferences and plan edits make prepared content sta
 
 
 def lesson_buttons(idx):
-    return {"inline_keyboard": [[{"text": "📚 Tell me more", "callback_data": f"more:{idx}"},
+    return {"inline_keyboard": [[{"text": "📝 Quiz me on this", "callback_data": f"quiz:{idx}"}],
+                                [{"text": "📚 Tell me more", "callback_data": f"more:{idx}"},
                                  {"text": "⚙️ Lesson settings", "callback_data": "set:menu"}]]}
 
 
@@ -1086,10 +1110,15 @@ def handle_message(msg):
             if p["kind"] == "biws":
                 biws_welcome(p)
                 return
+            say = "\n/say - practise speaking" if p.get("voice") else ""
             send(chat, f"✅ Connected! I'm your tutor for: {p['course']}.\n\n{describe_schedule(p)}\n\n"
-                       f"Commands: /next (next session now), /quiz (test me on the current topic), skip (or tap Skip), /more (extra questions on the current topic), /settings, /questions, /progress, /feedback, /status, "
-                       f"/pause, /resume{', /say (practise speaking)' if p.get('voice') else ''}. Learning several things? /plans lists them, /switch 2 changes which "
-                       f"one these commands use.")
+                       "📌 Commands\n\n"
+                       "Learn\n/next - next session now\n/more - extra questions on the current topic" + say + "\n\n"
+                       "Get tested\n/quiz - test me on the current topic\nskip - skip a question (or tap Skip)\n\n"
+                       "Your plan\n/progress - your scores\n/settings - lesson size, depth, questions\n/questions - questions per quiz\n"
+                       "/feedback - tell me how to adjust\n/status\n/pause and /resume\n\n"
+                       "Learning several things?\n/plans - list them\n/switch 2 - change which one these commands use\n\n"
+                       "Everything: /help")
         else:
             send(chat, "Hi! Create your study plan on the website first, then tap the 'Open Telegram' button it gives you.")
         return
@@ -1257,13 +1286,7 @@ def handle_message(msg):
     elif cmd == "/next":
         deliver_next(plan)
     elif cmd in ("/quiz", "/question"):
-        touch(plan["id"])
-        units = plan["units"]
-        last = max(0, (plan["step"] - 1) // (2 if plan["mode"] == "teach_test" else 1))
-        unit = units[last % len(units)]
-        qs = make_quiz(plan, unit)
-        send(chat, f"📝 Quick quiz: {unit['title']}\n\n{len(qs)} questions, one at a time. /skip to skip one.")
-        arm_quiz(plan, last % len(units), qs)
+        start_quiz(plan)
     elif cmd == "/skip" and plan.get("pending"):
         do_skip(plan, plan["pending"])
     elif plan.get("pending"):
@@ -1324,6 +1347,17 @@ def process_update(u):
     if msg.get("chat", {}).get("type") not in (None, "private"):
         return  # one-to-one chats only
     chat = msg["chat"]["id"]
+    if "callback_query" in u:
+        cq = u["callback_query"]
+        data = cq.get("data", "")
+        slow = not data.startswith(("set:", "q:"))
+        try:  # stop the button's spinner now, before any waiting
+            tg("answerCallbackQuery", callback_query_id=cq["id"], **({"text": "⏳ Working on it…"} if slow else {}))
+        except Exception:
+            pass
+        # the same button on the same message tapped again while the first tap is still being handled
+        if not data.startswith("set:") and not db.once(f"cb:{chat}:{msg.get('message_id')}:{data}", ttl=30):
+            return
     try:
         with db.lease(f"chat:{chat}"):
             handle_update(u)

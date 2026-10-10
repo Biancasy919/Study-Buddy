@@ -18,6 +18,7 @@ if "pg" in sys.argv:
 else:
     os.environ["DATABASE_URL"] = ""
     os.environ["LOCAL_DB"] = str(Path(tmp) / "t.db")
+os.environ["NO_LEGACY_IMPORT"] = "1"
 os.environ.update(TELEGRAM_BOT_TOKEN="123:abc", LLM_API_KEY="k", LLM_BASE_URL="https://llm.example/v1", LLM_MODEL="m1",
                   LLM_FALLBACK_MODEL="m2", CRON_SECRET="cs", FRONTEND_URL="https://front.example", TELEGRAM_BOT_USERNAME="TestBot",
                   DAILY_BUDGET_USD="1", BIWS_DIR=str(Path(tmp) / "none"))
@@ -160,6 +161,26 @@ check("the answer is graded from state kept in the database", any("good" in t fo
 sent.clear()
 webhook(upd(12, 55, "/progress"))
 check("commands work", len(sent) == 1)
+
+print("buttons")
+db.update_plan(pid, pending=None)
+
+
+def tap(uid, data, msg_id=500):
+    return webhook({"update_id": uid, "callback_query": {"id": f"cb{uid}", "data": data,
+                    "message": {"message_id": msg_id, "chat": {"id": 55, "type": "private"}}}})
+
+
+sent.clear()
+tap(930, "quiz:0")
+check("the Quiz button on a lesson starts a quiz", any("Quick quiz" in t for c_, t in sent) and db.PLANS[pid]["pending"] is not None)
+db.update_plan(pid, pending=None)
+sent.clear()
+tap(931, "quiz:0", msg_id=501)
+tap(932, "quiz:0", msg_id=501)  # the same button tapped twice
+check("a button tapped twice is handled once", sum("Quick quiz" in t for c_, t in sent) == 1)
+db.update_plan(pid, pending=None)
+check("lessons carry a Quiz button", any(b["callback_data"].startswith("quiz:") for row in A.lesson_buttons(0)["inline_keyboard"] for b in row))
 
 print("two messages at once")
 order = []
