@@ -227,6 +227,13 @@ check("the website's choice is stored", db.PLANS[r.get_json()["id"]]["qtypes"] =
 r = c.post("/api/plans", json=dict(PLAN, topic="Chess"))
 check("no choice means open-ended", db.PLANS[r.get_json()["id"]]["qtypes"] == ["open"])
 
+print("weak questions come back")
+units = db.PLANS[pid]["units"]
+db.update_plan(pid, missed=[dict(topic=units[0]["title"], q="Old Q?", a="x", reviewed=0)])
+check("on a first round, only earlier topics' misses return", A.pick_review(db.PLANS[pid], units[0], 0) == [])
+check("on a second round, this topic's misses return too", len(A.pick_review(db.PLANS[pid], units[0], 1)) == 1)
+db.update_plan(pid, missed=[])
+
 print("two messages at once")
 order = []
 orig = A.handle_update
@@ -299,6 +306,30 @@ check("a busy moment is retried once", A.ask("s", "u") == "hello")
 script[:] = [R(503, {}), R(503, {}), R(200, ok_body)]
 calls.clear()
 check("then the fallback model takes over", A.ask("s", "u") == "hello" and calls[-1][1] == "m2")
+import requests as _rq
+
+
+class Slow:
+    status_code = 200
+
+    def json(self):
+        raise _rq.Timeout("slow")
+
+
+def post_slow_then_ok(url, **k):
+    calls.append((url, k["json"]["model"], k["timeout"]))
+    r = script.pop(0)
+    if r == "slow":
+        raise _rq.Timeout("too slow")
+    return r
+
+
+A._http.post = post_slow_then_ok
+script[:] = ["slow", R(200, ok_body)]
+calls.clear()
+check("a slow model is dropped for the fallback straight away (no second wait)", A.ask("s", "u", 700) == "hello"
+      and [c_[1] for c_ in calls] == ["m1", "m2"] and calls[0][2] < 20)
+A._http.post = fake_post
 script[:] = [R(401, {})]
 try:
     A.ask("s", "u"); bad = False

@@ -31,7 +31,7 @@ DATA = ROOT / "data"  # only used for the Wall Street guide's cache when you run
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1").rstrip("/")  # any OpenAI-compatible API
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
+LLM_MODEL = os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")
 LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "")
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 PORT = int(os.getenv("PORT", "5050"))
@@ -78,15 +78,24 @@ def ask(system: str, user: str, max_tokens=3000, temperature=None) -> str:
         raise RuntimeError("No AI key set on the server (LLM_API_KEY).")
     db.budget_check()
     err = None
+    start = time.time()
+    # a shared AI gateway is sometimes slow for a minute: don't wait on one model for long, try the next
+    patience = min(40.0, 9.0 + max_tokens / 150)
     for model in [m for m in (LLM_MODEL, LLM_FALLBACK_MODEL) if m]:
         for attempt in range(2):  # one quick retry for a busy moment, then on to the fallback model
+            left = 56.0 - (time.time() - start)
+            if left < 4:
+                raise err or RuntimeError("The AI service took too long.")
             body = {"model": model, "max_tokens": max_tokens,
                     "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
             if temperature is not None:
                 body["temperature"] = temperature
             try:
                 r = _http.post(f"{LLM_BASE_URL}/chat/completions", headers={"Authorization": f"Bearer {LLM_API_KEY}"},
-                               json=body, timeout=50)
+                               json=body, timeout=max(4.0, min(patience, left)))
+            except requests.Timeout as e:
+                err = e
+                break  # too slow: straight to the other model
             except requests.RequestException as e:
                 err = e
                 continue
@@ -249,12 +258,14 @@ def make_lesson(plan, unit, more=False):
 
 
 def pick_review(plan, unit, round_no):
-    """Missed questions from OTHER, already-studied topics to revisit. 1 for short quizzes, up to 2 otherwise."""
+    """Missed questions to revisit: from earlier topics, and (on a second round or extra practice) from this topic too.
+    1 for short quizzes, up to 2 otherwise."""
     import random
     titles = [u["title"] for u in plan["units"]]
     cur = titles.index(unit["title"]) if unit["title"] in titles else 0
-    ok = [m for m in (plan.get("missed") or []) if m["topic"] != unit["title"]
-          and m["topic"] in titles and (titles.index(m["topic"]) < cur or round_no > 0)]
+    ok = [m for m in (plan.get("missed") or []) if m["topic"] in titles
+          and (titles.index(m["topic"]) < cur or round_no > 0)
+          and (m["topic"] != unit["title"] or round_no > 0)]
     random.shuffle(ok)
     ok.sort(key=lambda m: m.get("reviewed", 0))  # least-reviewed first
     return ok[: 1 if plan["nq"] <= 3 else 2]
@@ -277,7 +288,9 @@ def type_rules(types):
               "right one, \"answer\" explains why it is right. tf = a true-or-false claim to judge (tricky but fair): \"tf\" is "
               "true or false, \"answer\" explains why. open = a written explain/apply question. fill = a sentence with a ____ "
               "blank, \"answer\" is the missing word(s). calc = a calculation or worked problem with numbers. For mcq and tf "
-              "also add \"hint\": one short nudge towards the right answer that never gives it away.")
+              "also add \"hint\": one short nudge towards the right answer that never gives it away. Every \"answer\" is a clean "
+              "final explanation of 1-3 sentences: work out any numbers BEFORE writing it, never think out loud, and never write "
+              "'wait', 'correction' or 'actually'.")
 
 
 def shape_question(q):
@@ -760,7 +773,8 @@ def grade_one(plan, unit, q, reply, tries=0):
         "\"feedback\": str, \"reveal\": str}. Accept correct answers in different words; do not demand exact wording, but "
         "require the key idea(s). If the message is NOT an attempt (a question about the question, a request to repeat or "
         "clarify), use verdict \"not_attempt\" and put a short helpful clarification in feedback WITHOUT revealing the "
-        "answer. If correct: feedback is one short line of praise. If NOT fully correct: "
+        "answer. If correct: feedback starts with a short confirmation of what they said (e.g. \"Yes, cash flow, because ...\"), "
+        "then ONE or TWO sentences explaining why it is right, using the model answer (under 45 words, no praise filler). If NOT fully correct: "
         "feedback (plain text, under 70 words) must COACH, not tell: say what part is right, then explain the method or "
         "steps to work it out and where their reasoning went off, WITHOUT stating the final answer, final number or the "
         "missing key fact, so they can try again. "
@@ -780,7 +794,7 @@ def start_quiz(plan, idx=None):
         idx = current_idx(plan)
     idx %= len(plan["units"])
     unit = plan["units"][idx]
-    qs = make_quiz(plan, unit)
+    qs = make_quiz(plan, unit, round_no=len((plan.get("asked") or {}).get(unit["title"], [])) // max(1, plan["nq"]))
     send(plan["chat_id"], f"📝 Quick quiz: {unit['title']}\n\n{len(qs)} questions, one at a time. /skip to skip one.")
     arm_quiz(plan, idx, qs)
 
@@ -794,11 +808,12 @@ def start_extra(plan, idx, n=None):
     tg("sendChatAction", chat_id=plan["chat_id"], action="typing")
     p2 = dict(plan, nq=n or plan["nq"])
     try:
-        qs = make_quiz(p2, unit, round_no=len((plan.get("asked") or {}).get(unit["title"], [])) // max(1, p2["nq"]), review=False)
+        qs = make_quiz(p2, unit, round_no=max(1, len((plan.get("asked") or {}).get(unit["title"], [])) // max(1, p2["nq"])), review=True)
     except Exception as e:
         send(plan["chat_id"], "⚠️ Couldn't write more questions just now" + quota_note(e) + ". Try again soon.")
         return
-    send(plan["chat_id"], f"📝 More practice: {unit['title']}\n\n{len(qs)} fresh questions, one at a time.")
+    send(plan["chat_id"], f"📝 More practice: {unit['title']}\n\n{len(qs)} questions, one at a time"
+                          + (", including a few you found tricky before." if any(q.get("review") for q in qs) else "."))
     arm_quiz(plan, idx % len(plan["units"]), qs)
 
 
