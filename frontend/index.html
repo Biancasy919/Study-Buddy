@@ -287,6 +287,14 @@
     </div>
     <label class="f">Questions per quiz</label>
     <input type="number" id="nq" value="5" min="2" max="15" step="1" style="width:120px">
+    <label class="f">What kinds of questions? <span class="hint">Pick as many as you like</span></label>
+    <div class="chips" id="qtypes">
+      <button class="chip sel" data-qt="mcq">Multiple choice</button>
+      <button class="chip" data-qt="tf">True or false</button>
+      <button class="chip sel" data-qt="open">Open-ended</button>
+      <button class="chip" data-qt="fill">Fill in the blank</button>
+      <button class="chip" data-qt="calc">Calculations</button>
+    </div>
     <label class="f">Which days?</label>
     <div class="chips" id="days"></div>
     <div class="row wrap">

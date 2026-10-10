@@ -57,6 +57,8 @@ $$(".drop").forEach(d=>{
 $$("[data-level]").forEach(b=>b.onclick=()=>{S.level=b.dataset.level;$$("[data-level]").forEach(x=>x.classList.toggle("sel",x===b))});
 $$("[data-focus]").forEach(b=>b.onclick=()=>{const v=b.dataset.focus;S.focus.has(v)?S.focus.delete(v):S.focus.add(v);b.classList.toggle("sel")});
 $$("[data-size]").forEach(b=>b.onclick=()=>{S.size=b.dataset.size;$$("[data-size]").forEach(x=>x.classList.toggle("sel",x===b))});
+S.qtypes=new Set(["mcq","open"]);
+$$("[data-qt]").forEach(b=>b.onclick=()=>{const k=b.dataset.qt;if(S.qtypes.has(k)){if(S.qtypes.size>1)S.qtypes.delete(k)}else S.qtypes.add(k);b.classList.toggle("sel",S.qtypes.has(k))});
 $$("[data-depth]").forEach(b=>b.onclick=()=>{S.depth=b.dataset.depth;$$("[data-depth]").forEach(x=>x.classList.toggle("sel",x===b))});
 // mode, days, tz
 $$("[data-mode]").forEach(b=>b.onclick=()=>{S.mode=b.dataset.mode;$$("[data-mode]").forEach(x=>x.classList.toggle("sel",x===b))});
@@ -119,7 +121,7 @@ async function sendFiles(id){
 $("#create").onclick=async()=>{
   $("#err").textContent="";
   if(!S.days.size){$("#err").textContent="Pick at least one day.";return}
-  const body={kind:S.kind,mode:S.mode,size:S.size,depth:S.depth,nq:Math.min(15,Math.max(2,parseInt($("#nq").value)||5)),days:[...S.days],time:$("#time").value,tz:$("#tz").value};
+  const body={kind:S.kind,mode:S.mode,size:S.size,depth:S.depth,nq:Math.min(15,Math.max(2,parseInt($("#nq").value)||5)),qtypes:[...S.qtypes],days:[...S.days],time:$("#time").value,tz:$("#tz").value};
   if(S.kind==="smu"){body.notes=$("#notes").value}
   else if(S.kind==="biws"){Object.assign(body,{modules:[...S.biwsMods],optional:$("#biws-opt-days").checked,start:+$("#biws-start").value||1,notes:$("#biws-notes").value})}
   else if(S.kind==="language"){Object.assign(body,{language:$("#lang").value,level:S.level,focus:[...S.focus].join(", ")||"Everyday conversation",scope:$("#lnotes").value,lessons:$("#llessons").value})}

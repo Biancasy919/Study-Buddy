@@ -182,6 +182,51 @@ check("a button tapped twice is handled once", sum("Quick quiz" in t for c_, t i
 db.update_plan(pid, pending=None)
 check("lessons carry a Quiz button", any(b["callback_data"].startswith("quiz:") for row in A.lesson_buttons(0)["inline_keyboard"] for b in row))
 
+print("question types")
+db.update_plan(pid, pending=None, qtypes=["mcq", "tf"])
+seen_sys = []
+_old = A.ask_json
+
+
+def typed_ask_json(system, user, max_tokens=0, temperature=None):
+    if "write quiz questions" in system:
+        seen_sys.append(system)
+        return {"questions": [
+            {"type": "mcq", "q": "Pick the capital of France", "options": ["Berlin", "Paris", "Rome", "Madrid"], "correct": 1,
+             "answer": "Paris is the capital.", "hint": "Think of the Eiffel Tower."},
+            {"type": "tf", "q": "The Earth is flat.", "tf": False, "answer": "It is a sphere.", "hint": "Think of photos from space."},
+            {"type": "mcq", "q": "broken", "options": ["only", "two"], "correct": 5, "answer": "x"}]}
+    return _old(system, user, max_tokens, temperature)
+
+
+A.ask_json = typed_ask_json
+sent.clear()
+db.update_plan(pid, nq=3)
+webhook(upd(940, 55, "/quiz"))
+A.ask_json = _old
+pend = db.PLANS[pid]["pending"]
+q0, q1, q2 = pend["qs"]
+check("the chosen types are passed to the AI", any("mcq, tf" in t for t in seen_sys))
+check("multiple choice keeps the right answer after shuffling", q0["opts"][q0["ci"]] == "Paris" and sorted(q0["opts"]) == ["Berlin", "Madrid", "Paris", "Rome"])
+check("true/false is shaped", q1["opts"] == ["True", "False"] and q1["ci"] == 1)
+check("a malformed question falls back to open-ended", q2["type"] == "open" and "opts" not in q2)
+check("the first question has answer buttons", any("Pick the capital" in t for c_, t in sent))
+wrong = (q0["ci"] + 1) % 4
+tap(941, f"q:pick:0:{wrong}", msg_id=600)
+check("a wrong tap gives a hint, not the answer", any("Not quite" in t and "Eiffel" in t and "Paris is" not in t for c_, t in sent)
+      and db.PLANS[pid]["pending"]["await"] == "choice")
+tap(942, "q:retry", msg_id=601)
+tap(943, f"q:pick:0:{q0['ci']}", msg_id=602)
+check("a correct retry moves on", db.PLANS[pid]["pending"]["i"] == 1)
+webhook(upd(944, 55, "false"))
+check("typing the answer works too", db.PLANS[pid]["pending"]["i"] == 2 and db.PLANS[pid]["pending"]["score"] == 1.0)
+db.update_plan(pid, pending=None, qtypes=["open"], nq=3)
+check("old plans default to open-ended", A.clean_qtypes(None) == ["open"] and A.clean_qtypes(["tf", "zzz"]) == ["tf"])
+r = c.post("/api/plans", json=dict(PLAN, qtypes=["mcq", "tf", "bogus"], topic="Chess"))
+check("the website's choice is stored", db.PLANS[r.get_json()["id"]]["qtypes"] == ["mcq", "tf"])
+r = c.post("/api/plans", json=dict(PLAN, topic="Chess"))
+check("no choice means open-ended", db.PLANS[r.get_json()["id"]]["qtypes"] == ["open"])
+
 print("two messages at once")
 order = []
 orig = A.handle_update

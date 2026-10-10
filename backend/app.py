@@ -260,6 +260,61 @@ def pick_review(plan, unit, round_no):
     return ok[: 1 if plan["nq"] <= 3 else 2]
 
 
+QTYPES = {"mcq": "Multiple choice", "tf": "True / false", "open": "Open-ended", "fill": "Fill in the blank", "calc": "Calculation"}
+
+
+def clean_qtypes(v):
+    out = [t for t in QTYPES if isinstance(v, (list, tuple, set)) and t in v]
+    return out or ["open"]
+
+
+def type_rules(types):
+    if types == ["open"]:
+        return ""
+    return (" Use ONLY these question types, spreading them as evenly as you can across the questions: " + ", ".join(types)
+            + ". Put \"type\" on every question. mcq = multiple choice: \"options\" is exactly 4 short, plausible options "
+              "(one right; the wrong ones are common mistakes; never 'all of the above'), \"correct\" is the index 0-3 of the "
+              "right one, \"answer\" explains why it is right. tf = a true-or-false claim to judge (tricky but fair): \"tf\" is "
+              "true or false, \"answer\" explains why. open = a written explain/apply question. fill = a sentence with a ____ "
+              "blank, \"answer\" is the missing word(s). calc = a calculation or worked problem with numbers. For mcq and tf "
+              "also add \"hint\": one short nudge towards the right answer that never gives it away.")
+
+
+def shape_question(q):
+    """Make a generated question safe to ask: multiple choice and true/false get shuffled options and a known answer."""
+    import random
+    t = q.get("type")
+    ans = str(q.get("answer", ""))
+    opts, c = q.get("options"), q.get("correct")
+    if t == "mcq" and isinstance(opts, list) and len(opts) == 4 and all(isinstance(o, str) for o in opts) \
+            and isinstance(c, int) and 0 <= c < 4:
+        order = list(range(4))
+        random.shuffle(order)
+        q["opts"], q["ci"], q["why"] = [opts[i] for i in order], order.index(c), ans
+        q["answer"] = f"{'ABCD'[q['ci']]}) {q['opts'][q['ci']]}. {ans}"
+    elif t == "tf" and isinstance(q.get("tf"), bool):
+        q["opts"], q["ci"], q["why"] = ["True", "False"], 0 if q["tf"] else 1, ans
+        q["answer"] = f"{'True' if q['tf'] else 'False'}. {ans}"
+    elif t in ("fill", "calc"):
+        pass
+    else:
+        q["type"] = "open"
+    for k in ("options", "correct", "tf"):
+        q.pop(k, None)
+    return q
+
+
+def pick_index(q, text):
+    """Which option a typed answer means (A/B/C/D, true/false, or the option's own words), or None."""
+    t = text.strip().lower().strip(" .!()")
+    opts = q.get("opts") or []
+    if q.get("type") == "tf":
+        return {"true": 0, "t": 0, "yes": 0, "false": 1, "f": 1, "no": 1}.get(t)
+    if len(t) == 1 and t in "abcd" and "abcd".index(t) < len(opts):
+        return "abcd".index(t)
+    return next((k for k, o in enumerate(opts) if o.strip().lower() == t), None)
+
+
 def make_quiz(plan, unit, round_no=0, review=True):
     ctx = unit_context(plan, unit)
     exam, practice = bank_excerpt(plan, unit, "exam", 14000), bank_excerpt(plan, unit, "practice", 8000)
@@ -297,6 +352,7 @@ def make_quiz(plan, unit, round_no=0, review=True):
     d = ask_json(
         (biws.QUIZ_STYLE + " Output JSON: " if biws_quiz else "You write quiz questions that test real understanding, not just recall. Output JSON: ")
         + "{\"questions\": [{\"q\": str, \"answer\": str}]} with exactly " + str(plan["nq"]) + " questions"
+        + type_rules(clean_qtypes(plan.get("qtypes")))
         + ("" if biws_quiz else ", progressing from recall to explain-why to application/scenario (repeat that pattern if there are more than 3)")
         + ". \"answer\" is the model answer with the key points a correct answer must include. Difficulty: " + DEPTHS[plan["depth"]] + (
             ' This is a language course with optional voice practice. Judge from the topic: ONLY if it teaches words, phrases, '
@@ -306,13 +362,14 @@ def make_quiz(plan, unit, round_no=0, review=True):
             'romanization/pinyin, and write "q" as an English prompt such as "Say \'Hello, how are you?\' in '
             'Mandarin". "answer" = the target phrase.' if plan.get("voice") and AUDIO_GRADING else "") + (BANK_RULES if bank else ""),
         f"Course: {plan['course']}\nTopic: {unit['title']} ({unit['summary']})\nThis is attempt #{round_no + 1} "
-        f"at this topic; vary the questions if > 1.{learner_notes(plan)}\n\nMATERIAL:\n{ctx or '(none, use general knowledge)'}{bank}{avoid}{rev_block}", 400 + 250 * (plan["nq"] + n_rev), temperature=1.0)
-    qs = [q for q in d["questions"] if not q.get("review")][:plan["nq"]]
+        f"at this topic; vary the questions if > 1.{learner_notes(plan)}\n\nMATERIAL:\n{ctx or '(none, use general knowledge)'}{bank}{avoid}{rev_block}", 400 + 250 * (plan["nq"] + n_rev) + (120 * plan["nq"] if plan.get("qtypes") else 0), temperature=1.0)
+    qs = [shape_question(q) for q in d["questions"] if not q.get("review")][:plan["nq"]]
     topic_of = {m["q"]: m["topic"] for m in rev}
     for q in [q for q in d["questions"] if q.get("review")][:n_rev]:
         q["review_topic"] = topic_of.get(q.get("review_of"), rev[0]["topic"] if rev else (fresh_topic or ""))
         q.pop("speak", None)
-        qs.append(q)
+        q["type"] = "open"
+        qs.append(shape_question(q))
     return qs
 
 
@@ -433,9 +490,32 @@ def arm_quiz(plan, idx, qs):
     send_question(plan, pend)
 
 
-def ask_with_skip(chat, text, i):
-    tg("sendMessage", chat_id=chat, text=text,
-       reply_markup={"inline_keyboard": [[{"text": "⏭ Skip this question", "callback_data": f"q:skip:{i}"}]]})
+def ask_with_skip(chat, text, i, q=None):
+    rows = [[{"text": "⏭ Skip this question", "callback_data": f"q:skip:{i}"}]]
+    if q and q.get("opts"):  # multiple choice / true-false: answer with a tap
+        labels = list("ABCD")[:len(q["opts"])] if q.get("type") == "mcq" else q["opts"]
+        rows.insert(0, [{"text": lab, "callback_data": f"q:pick:{i}:{k}"} for k, lab in enumerate(labels)])
+    tg("sendMessage", chat_id=chat, text=text, reply_markup={"inline_keyboard": rows})
+
+
+def question_body(q):
+    if q.get("type") == "mcq" and q.get("opts"):
+        return q["q"] + "\n\n" + "\n".join(f"{'ABCD'[k]}) {o}" for k, o in enumerate(q["opts"])) + "\n\nTap your answer."
+    if q.get("type") == "tf" and q.get("opts"):
+        return q["q"] + "\n\nTrue or false?"
+    return q["q"]
+
+
+def answer_pick(plan, pend, k):
+    """A tapped (or typed) multiple-choice / true-false answer: graded on the spot, no AI needed."""
+    q, chat = pend["qs"][pend["i"]], plan["chat_id"]
+    chosen = q["opts"][k]
+    if k == q["ci"]:
+        send(chat, "✅ Correct! " + (q.get("why") or ""))
+        resolve(plan, pend, 1.0, chosen, "correct")
+    else:
+        send(chat, "❌ Not quite. " + (q.get("hint") or "Have another think about it."))
+        resolve(plan, pend, 0.0, chosen, "incorrect", reveal=q["answer"])
 
 
 def do_skip(plan, pend):
@@ -461,7 +541,7 @@ def send_question(plan, pend):
         send_phrase_audio(plan["chat_id"], plan, dict(ph, meaning="Listen, then record yours"))
     else:
         update_plan(plan["id"], speak_target=None)
-        ask_with_skip(plan["chat_id"], f"Question {i+1}/{n}\n\n{q['q']}", i)
+        ask_with_skip(plan["chat_id"], f"Question {i+1}/{n}\n\n{question_body(q)}", i, q)
 
 
 def analyze(plan, pend):
@@ -558,6 +638,9 @@ def handle_callback(cq):
             update_plan(plan["id"], depth=parts[2])
         elif parts[1] == "nq":
             update_plan(plan["id"], nq=max(2, min(15, plan["nq"] + int(parts[2]))))
+        elif parts[1] == "qt" and parts[2] in QTYPES:
+            now = set(clean_qtypes(plan.get("qtypes"))) ^ {parts[2]}
+            update_plan(plan["id"], qtypes=clean_qtypes(now) if now else clean_qtypes(plan.get("qtypes")))
         elif parts[1] == "fmt":
             pass
         elif parts[1] == "noop":
@@ -575,6 +658,12 @@ def handle_callback(cq):
         if pend and str(pend["i"]) == data.split(":")[2]:  # ignore buttons from earlier questions
             do_skip(plan, pend)
         return
+    if plan and data.startswith("q:pick:"):
+        pend = plan.get("pending")
+        _, _, i, k = data.split(":")
+        if pend and str(pend["i"]) == i and pend.get("await") != "choice" and pend["qs"][pend["i"]].get("opts"):
+            answer_pick(plan, pend, int(k))
+        return
     if plan and data.startswith("q:"):
         pend = plan.get("pending")
         if not pend or pend.get("await") != "choice":
@@ -590,6 +679,8 @@ def handle_callback(cq):
                 ph = dict(text=q["target"], pron=q.get("pron", ""), meaning=q["q"])
                 update_plan(plan["id"], speak_target=ph)
                 send_phrase_audio(chat, plan, dict(ph, meaning="Listen, then record yours"))
+            elif q.get("opts"):
+                ask_with_skip(chat, "🔁 Have another go (practice only, your score stays).\n\n" + question_body(q), pend["i"], q)
             else:
                 send(chat, "🔁 Have another go. Just send your new answer (practice only, your score stays).")
         return
@@ -923,8 +1014,11 @@ def settings_view(plan):
             [{"text": ck(plan["depth"], k) + v, "callback_data": f"set:depth:{k}"} for k, v in DEPTH_LABELS.items()],
             [{"text": "➖", "callback_data": "set:nq:-1"}, {"text": f"{plan['nq']} questions", "callback_data": "set:noop"},
              {"text": "➕", "callback_data": "set:nq:1"}]]
+    qt = clean_qtypes(plan.get("qtypes"))
+    btns = [{"text": ("✓ " if k in qt else "") + v, "callback_data": f"set:qt:{k}"} for k, v in QTYPES.items()]
+    rows += [btns[:2], btns[2:4], btns[4:]]
     return (f"⚙️ Settings for {plan['course']}\n\nHow much per lesson (top row), how deep (middle), "
-            f"questions per quiz (bottom). Changes apply from the next lesson or quiz."), {"inline_keyboard": rows}
+            f"questions per quiz, then the kinds of questions (tap to switch on or off). Changes apply from the next lesson or quiz."), {"inline_keyboard": rows}
 
 
 def deliver_next(plan):
@@ -1295,6 +1389,10 @@ def handle_message(msg):
         if q.get("speak"):
             send(chat, "This one needs a 🎤 voice message. Hold the mic button to record, or /skip.")
             return
+        k = pick_index(q, text) if q.get("opts") and pend.get("await") != "choice" else None
+        if k is not None:
+            answer_pick(plan, pend, k)
+            return
         try:
             tries = pend.get("tries", 0)
             pts, fb, reveal = grade_one(plan, plan["units"][pend["unit"]], q, text, tries)
@@ -1572,7 +1670,7 @@ def create_plan():
             return jsonify(error="Questions per quiz must be between 2 and 15."), 400
         pid = secrets.token_hex(5)
         load()[pid] = dict(id=pid, kind="biws", topic=biws.TITLE, scope="", notes=str_("notes", 1500), lessons=None,
-                           mode=mode, size=size, depth=depth, nq=nq, voice=False, language=None, speak_target=None,
+                           mode=mode, size=size, depth=depth, nq=nq, qtypes=clean_qtypes(f.get("qtypes")), voice=False, language=None, speak_target=None,
                            phrases={}, missed=[], prefs=[], weak=[], history=[], awaiting_feedback=False, course=biws.TITLE,
                            units=units, status="ready", step=0, chat_id=None, paused=False, pending=None, last_sent=None,
                            schedule=dict(days=days, time=f["time"], tz=f["tz"]))
@@ -1604,7 +1702,7 @@ def create_plan():
         lessons = None
     pid = secrets.token_hex(5)
     load()[pid] = dict(id=pid, kind=kind, topic=topic, scope=scope, notes=str_("notes", 1500), lessons=lessons, mode=mode,
-                       size=size, depth=depth, nq=nq, voice=True, language=None, speak_target=None, phrases={}, missed=[],
+                       size=size, depth=depth, nq=nq, qtypes=clean_qtypes(f.get("qtypes")), voice=True, language=None, speak_target=None, phrases={}, missed=[],
                        prefs=[], weak=[], history=[], awaiting_feedback=False, course="", units=[], status="new", step=0,
                        chat_id=None, paused=False, pending=None, last_sent=None,
                        schedule=dict(days=days, time=f["time"], tz=f["tz"]))
