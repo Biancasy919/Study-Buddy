@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Study Buddy</title>
+<title>TOMO, your study buddy</title>
 <meta name="theme-color" content="#2aabee">
 <link rel="icon" type="image/svg+xml" href="/mascot.svg">
 <style>
@@ -54,6 +54,9 @@
   .hero-logo svg{width:52px;height:52px;margin-left:-3px}
   .hero-logo::after{content:"";position:absolute;inset:-9px;border-radius:50%;border:2px solid rgba(42,171,238,.25)}
   @keyframes float{50%{transform:translateY(-7px)}}
+  .tomo-name{text-align:center;margin:-4px 0 14px;font-size:15px;color:var(--mute);letter-spacing:.2px}
+  .tomo-name b{color:#2aabee;font-size:17px}
+  .tomo-name small{font-size:12.5px;opacity:.85}
   .hero-mascot{display:block;width:140px;height:140px;margin:0 auto 20px;border-radius:50%;border:5px solid #fff;
     box-shadow:0 16px 36px rgba(34,158,217,.4);animation:float 4s ease-in-out infinite;position:relative}
   .logo-img{width:38px;height:38px;border-radius:50%;box-shadow:0 4px 12px rgba(34,158,217,.4)}
@@ -140,15 +143,16 @@
 </head>
 <body>
 <main>
-  <div class="brand hide" id="brand"><img class="logo-img" src="/mascot.svg" alt="">Study Buddy</div>
+  <div class="brand hide" id="brand"><img class="logo-img" src="/mascot.svg" alt="">TOMO</div>
   <div class="steps hide" id="steps">
     <div class="st"><i></i><em>Topic</em></div><div class="st"><i></i><em>Material</em></div><div class="st"><i></i><em>Style</em></div><div class="st"><i></i><em>Your plan</em></div>
   </div>
 
   <!-- welcome -->
   <section class="card welcome" data-step="-1">
-    <img class="hero-mascot" src="/mascot.svg" alt="Your study buddy">
-    <h1>Welcome to your <span>study buddy</span> on Telegram</h1>
+    <img class="hero-mascot" src="/mascot.svg" alt="TOMO, your study buddy">
+    <h1>Hi, I'm <span>TOMO</span>, your study buddy on Telegram</h1>
+    <p class="tomo-name"><b>T</b>est · <b>O</b>rganise · <b>M</b>aster · <b>O</b>wn it<br><small><i>Tomo</i> (友) means "friend" in Japanese</small></p>
     <p class="lead">Tell me what you're learning and when. I'll send you bite-size lessons and quizzes right in your chat, and help you actually remember them.</p>
     <div class="chat" aria-hidden="true">
       <div class="b in">📖 Lesson 3/10: Cost Behaviour<small>Your quiz on this comes next session</small></div>

@@ -1006,7 +1006,7 @@ GENERIC_HELP = (
 
 def biws_welcome(p):
     chat = p["chat_id"]
-    send(chat, f"👋 Hi! I'm your IB interview tutor, built from your Breaking Into Wall Street guide.\n\n{BIWS_HELP}")
+    send(chat, f"👋 Hi, I'm TOMO! I'm your IB interview tutor, built from your Breaking Into Wall Street guide.\n\n{BIWS_HELP}")
     if p["step"] == 0:
         send(chat, f"Let's begin. {describe_schedule(p)}\nHere's Day 1:")
         update_plan(p["id"], last_sent=datetime.now(ZoneInfo(p["schedule"]["tz"])).date().isoformat())
@@ -1111,7 +1111,7 @@ def handle_message(msg):
                 biws_welcome(p)
                 return
             say = "\n/say - practise speaking" if p.get("voice") else ""
-            send(chat, f"✅ Connected! I'm your tutor for: {p['course']}.\n\n{describe_schedule(p)}\n\n"
+            send(chat, f"✅ Connected! I'm TOMO, your tutor for: {p['course']}.\n\n{describe_schedule(p)}\n\n"
                        "📌 Commands\n\n"
                        "Learn\n/next - next session now\n/more - extra questions on the current topic" + say + "\n\n"
                        "Get tested\n/quiz - test me on the current topic\nskip - skip a question (or tap Skip)\n\n"
@@ -1120,7 +1120,7 @@ def handle_message(msg):
                        "Learning several things?\n/plans - list them\n/switch 2 - change which one these commands use\n\n"
                        "Everything: /help")
         else:
-            send(chat, "Hi! Create your study plan on the website first, then tap the 'Open Telegram' button it gives you.")
+            send(chat, "Hi, I'm TOMO! Create your study plan on the website first, then tap the 'Open Telegram' button it gives you.")
         return
     plan = plan_for_chat(chat)
     if not plan:
