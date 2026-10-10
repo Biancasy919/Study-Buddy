@@ -124,7 +124,7 @@ Vercel redeploys the frontend and the backend by itself. Plans live in Neon, so 
 - **Time limit:** each request can run for up to 60 seconds. Building a plan from a big course normally takes 10 to 30 seconds.
 - **Breaking Into Wall Street is hidden online** until you do the optional step below. The guide is copyrighted, so it is never in GitHub
   and never shown without a private access code. It always works if you run the app on your own computer.
-- **Voice notes aren't checked.** The AI API here is text-only. Language plans still send audio examples, and `/say` plays a phrase to repeat.
+- **Voice notes are listened to.** In language plans the bot plays a phrase, you send a voice note, and an audio-capable AI model (`LLM_AUDIO_MODEL`, default `gemini-3.5-flash-lite`; fallback `LLM_AUDIO_FALLBACK`) writes down what it heard and coaches your pronunciation. It needs an AI key that can use a Gemini model.
 - **Sessions are prepared 10 minutes ahead** by the scheduler, so scheduled lessons still arrive quickly.
 
 ## Keeping it safe and affordable

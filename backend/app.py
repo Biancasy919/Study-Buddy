@@ -35,7 +35,9 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")
 LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "")
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 PORT = int(os.getenv("PORT", "5050"))
-AUDIO_GRADING = False  # checking pronunciation from voice notes needs an audio-capable model, which this setup doesn't use
+AUDIO_GRADING = True  # voice notes are listened to by an audio-capable model (the gateway takes audio as a data: URL)
+AUDIO_MODEL = os.getenv("LLM_AUDIO_MODEL", "gemini-3.5-flash-lite")
+AUDIO_FALLBACK = os.getenv("LLM_AUDIO_FALLBACK", "gemini-3.1-flash-lite")
 llm = bool(LLM_API_KEY)
 _http = requests.Session()  # reuses connections to Telegram and to the AI
 
@@ -73,7 +75,7 @@ def quota_note(e):
 
 
 # ---------------------------------------------------------------- AI (any OpenAI-compatible API)
-def ask(system: str, user: str, max_tokens=3000, temperature=None) -> str:
+def ask(system: str, user: str, max_tokens=3000, temperature=None, audio=None) -> str:
     if not llm:
         raise RuntimeError("No AI key set on the server (LLM_API_KEY).")
     db.budget_check()
@@ -81,13 +83,20 @@ def ask(system: str, user: str, max_tokens=3000, temperature=None) -> str:
     start = time.time()
     # a shared AI gateway is sometimes slow for a minute: don't wait on one model for long, try the next
     patience = min(40.0, 9.0 + max_tokens / 150)
-    for model in [m for m in (LLM_MODEL, LLM_FALLBACK_MODEL) if m]:
+    content = user
+    if audio:  # (bytes, mime): sent to an audio-capable model as a data: URL
+        import base64
+        data, mime = audio
+        mime = mime if (mime or "").startswith("audio/") else "audio/ogg"
+        content = [{"type": "text", "text": user},
+                   {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}]
+    for model in [m for m in ((AUDIO_MODEL, AUDIO_FALLBACK) if audio else (LLM_MODEL, LLM_FALLBACK_MODEL)) if m]:
         for attempt in range(2):  # one quick retry for a busy moment, then on to the fallback model
             left = 56.0 - (time.time() - start)
             if left < 4:
                 raise err or RuntimeError("The AI service took too long.")
             body = {"model": model, "max_tokens": max_tokens,
-                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}]}
             if temperature is not None:
                 body["temperature"] = temperature
             try:
@@ -116,8 +125,8 @@ def ask(system: str, user: str, max_tokens=3000, temperature=None) -> str:
     raise err or RuntimeError("The AI service didn't answer.")
 
 
-def ask_json(system: str, user: str, max_tokens=6000, temperature=None):
-    text = ask(system + "\nReturn ONLY valid JSON, no prose, no code fences.", user, max_tokens, temperature)
+def ask_json(system: str, user: str, max_tokens=6000, temperature=None, audio=None):
+    text = ask(system + "\nReturn ONLY valid JSON, no prose, no code fences.", user, max_tokens, temperature, audio=audio)
     return json.loads(text[text.find("{"): text.rfind("}") + 1] if "{" in text else text)
 
 
@@ -389,7 +398,7 @@ def make_quiz(plan, unit, round_no=0, review=True):
         + type_rules(clean_qtypes(plan.get("qtypes"))) + taught_rule
         + ("" if biws_quiz else ", progressing from recall to explain-why to application/scenario (repeat that pattern if there are more than 3)")
         + ". \"answer\" is the model answer with the key points a correct answer must include. Difficulty: " + DEPTHS[plan["depth"]] + (
-            ' This is a language course with optional voice practice. Judge from the topic: ONLY if it teaches words, phrases, '
+            ' This is a language course with optional voice practice. The speaking task is allowed even if it is not in the question-type list, and its target must be one of the "Phrases taught" when the lesson taught any. Judge from the topic: ONLY if it teaches words, phrases, '
             'sounds or tones meant to be spoken, make the LAST question a SPEAKING task; otherwise make them all normal written '
             'questions and never set "speak". For a speaking task set "speak": true, '
             '"target": the phrase the student must say aloud in the target language script, "pron": its '
@@ -473,9 +482,103 @@ def send_phrase_audio(chat, plan, ph):
         print("tts error:", e)
 
 
+def _sound_key(s):
+    import unicodedata
+    s = unicodedata.normalize("NFKD", s or "").lower()
+    return re.sub(r"[\W_\d]+", "", "".join(c for c in s if not unicodedata.combining(c)))
+
+
+def how_close(heard, target):
+    """0..1: how much of the target phrase was actually said (looks at the script and at the romanization)."""
+    import difflib
+    best = 0.0
+    for h in (heard.get("transcript"), heard.get("romanization")):
+        for t in (target.get("text"), target.get("pron")):
+            if h and t and _sound_key(h) and _sound_key(t):
+                best = max(best, difflib.SequenceMatcher(None, _sound_key(h), _sound_key(t)).ratio())
+    return best
+
+
+def grade_audio(plan, target, audio, mime):
+    """Listen to a voice note and coach the pronunciation. The reply ends with 'Pronunciation: X/5'.
+    It first writes down what was said WITHOUT being told the target (an AI told the target tends to 'hear' it),
+    then compares."""
+    heard = ask_json(
+        "You transcribe a short voice message. Output JSON {\"transcript\": str, \"romanization\": str}: exactly what is "
+        "said, in the language's normal script, even if it is wrong or odd, plus its romanization (e.g. pinyin with tone "
+        "marks) when the language has one. Never guess or autocorrect. If you cannot make out speech, use \"\" for both.",
+        "Transcribe the attached voice message.", 300, 0, audio=(audio, mime))
+    said = (heard.get("transcript") or "").strip()
+    rom = (heard.get("romanization") or "").strip()
+    if not said:
+        return ("I couldn't make out any words in that. Try again a little closer to the microphone, in a quiet spot.\n\n"
+                "Pronunciation: 0/5")
+    if how_close(heard, target) < 0.5:
+        return (f"I heard: \"{said}\"{f' ({rom})' if rom else ''}.\nThat isn't quite the phrase: the target was "
+                f"\"{target['text']}\" ({target.get('pron', '')}). Listen to it again, then give it another go.\n\nPronunciation: 1/5")
+    return ask(
+        "You are a kind, honest pronunciation coach for a language learner. You get their voice message, what a blind "
+        "transcription heard, and the target phrase. Reply in plain text, under 110 words: 1) what you heard, 2) how close "
+        "it was, naming specific tones or sounds that were off (only things you can really hear in the audio), 3) one or two "
+        "concrete tips, and finish with the line 'Pronunciation: X/5'. If any syllable differs from the target, X is at most "
+        "3. You are an AI and can miss subtle errors, so say so when unsure.",
+        f"Learner of {plan['course']}. Target: \"{target['text']}\" ({target.get('pron', '')}; {target.get('meaning', '')}). "
+        f"Blind transcription of the audio: \"{said}\" ({rom}). The voice message is attached.", 450, 0.3, audio=(audio, mime))
+
+
+def practice_buttons():
+    return {"inline_keyboard": [[{"text": "🔊 Hear it again", "callback_data": "say:again"},
+                                 {"text": "➡️ Another phrase", "callback_data": "say:next"}]]}
+
+
+def offer_phrase(plan, ph=None):
+    """Play a phrase and ask the learner to say it back."""
+    import random
+    if ph is None:
+        pool = [p for u in plan["units"][: current_idx(plan) + 1] for p in (plan.get("phrases") or {}).get(u["title"], [])]
+        if not pool:
+            send(plan["chat_id"], "No phrases yet. Get a lesson first with /next.")
+            return
+        ph = random.choice(pool)
+    update_plan(plan["id"], speak_target=ph)
+    send(plan["chat_id"], f"🎧 Listen, then hold the 🎤 and say it out loud:\n{ph['text']}  {ph['pron']}\n({ph['meaning']})\n\n"
+                          "Send me a voice message and I'll tell you how it sounded.", practice_buttons())
+    send_phrase_audio(plan["chat_id"], plan, ph)
+
+
 def handle_voice(chat, v):
-    send(chat, "Thanks for the voice note! I can't listen to voice messages yet, so I can't check pronunciation. "
-               "Use /say to hear a phrase, then repeat it out loud. That still helps a lot.")
+    plan = plan_for_chat(chat)
+    if not plan:
+        return
+    target, pend = plan.get("speak_target"), plan.get("pending")
+    if not target:
+        send(chat, "Thanks for the voice note! I listen when I've asked you to say something. "
+                   "Try /say to get a phrase to practise." if plan.get("voice") else "I can't use voice messages for this plan.")
+        return
+    if (v.get("duration") or 0) > 60 or (v.get("file_size") or 0) > 5_000_000:
+        send(chat, "That one's a bit long for me. Please send a short voice message (a few seconds) of just the phrase.")
+        return
+    tg("sendChatAction", chat_id=chat, action="typing")
+    in_quiz = bool(pend and pend["qs"][pend["i"]].get("speak"))
+    try:
+        path = tg("getFile", file_id=v["file_id"])["result"]["file_path"]
+        audio = _http.get(f"https://api.telegram.org/file/bot{TOKEN}/{path}", timeout=45).content
+        fb = grade_audio(plan, target, audio, v.get("mime_type") or "audio/ogg")
+    except Exception as e:
+        print("voice grading error:", e, flush=True)
+        if in_quiz:
+            send(chat, f"⚠️ I couldn't check that one{quota_note(e)}, so we'll move on. It was: {target['text']} {target.get('pron', '')}")
+            update_plan(plan["id"], speak_target=None)
+            move_on(plan, pend)
+        else:
+            send(chat, f"⚠️ I couldn't check that one{quota_note(e)}. Try again in a minute.")
+        return
+    if in_quiz:
+        send(chat, fb)
+        m = re.search(r"(\d(?:\.\d)?)\s*/\s*5", fb)
+        resolve(plan, pend, min(1.0, float(m.group(1)) / 5) if m else 0.0, "(voice message)", fb, ok_at=0.8)
+    else:
+        send(chat, fb, practice_buttons())
 
 
 def move_on(plan, pend):
@@ -635,6 +738,16 @@ def handle_callback(cq):
             send_figures(plan, int(parts[1]))
         elif parts[1] in FORMATS:
             send_guide_lesson(plan, int(parts[2]), parts[1])
+        return
+    if plan and data.startswith("say:"):
+        if data == "say:again" and plan.get("speak_target"):
+            send_phrase_audio(chat, plan, plan["speak_target"])
+        elif data == "say:next" and not (plan.get("pending") and plan["pending"]["qs"][plan["pending"]["i"]].get("speak")):
+            offer_phrase(plan)
+        elif data.startswith("say:pick:"):
+            _, _, ui, k = data.split(":")
+            ph = ((plan.get("phrases") or {}).get(plan["units"][int(ui)]["title"]) or [])[int(k)]
+            offer_phrase(plan, ph)
         return
     if plan and data.startswith("quiz:"):
         if plan.get("pending"):
@@ -1094,6 +1207,10 @@ def deliver_next(plan):
                 send_phrase_audio(chat, plan, ph)
             if phrases:
                 update_plan(plan["id"], phrases={**(load()[plan["id"]].get("phrases") or {}), unit["title"]: phrases})
+                if AUDIO_GRADING and plan.get("voice"):
+                    send(chat, "🎤 Your turn! Pick a phrase, say it out loud in a voice message, and I'll tell you how it sounded.",
+                         {"inline_keyboard": [[{"text": f"🎤 {p['text']}"[:60], "callback_data": f"say:pick:{idx}:{k}"}]
+                                              for k, p in enumerate(phrases[:5])]})
             remember_taught(plan, unit, text, phrases)
             update_plan(plan["id"], pending=None)
         else:
@@ -1399,15 +1516,7 @@ def handle_message(msg):
         if not plan.get("voice"):
             send(chat, "Voice practice isn't switched on for this plan.")
             return
-        import random
-        pool = [ph for u in plan["units"][: current_idx(plan) + 1] for ph in (plan.get("phrases") or {}).get(u["title"], [])]
-        if not pool:
-            send(chat, "No phrases yet. Get a lesson first with /next.")
-            return
-        ph = random.choice(pool)
-        send(chat, f"🎧 Listen, then say it out loud:\n{ph['text']}  {ph['pron']}\n({ph['meaning']})\n\n"
-                   "(I can't check pronunciation yet, but repeating it aloud still helps.)")
-        send_phrase_audio(chat, plan, ph)
+        offer_phrase(plan)
     elif cmd == "/pause":
         update_plan(plan["id"], paused=True); send(chat, "⏸ Paused. /resume to continue.")
     elif cmd == "/resume":

@@ -258,6 +258,69 @@ sys_, usr_ = seen_user[-1]
 check("the quiz is told to test only what was taught", "WHAT THE LESSON ACTUALLY TAUGHT" in usr_ and "大象" in usr_ and "did not teach" in sys_)
 db.update_plan(pid, taught={})
 
+print("voice notes")
+db.update_plan(pid, pending=None, voice=True, speak_target=dict(text="你好", pron="ni hao", meaning="hello"))
+_sent_audio = []
+_old_get, _old_ask = A._http.get, A.ask
+
+
+class _Resp:
+    content = b"OggS-fake-audio"
+
+
+A._http.get = lambda url, **k: _Resp()
+A.tg = lambda m, **k: ({"ok": True, "result": {"file_path": "voice/a.oga"}} if m == "getFile" else fake_tg(m, **k))
+
+
+def ask_with_audio(system, user, max_tokens=3000, temperature=None, audio=None):
+    _sent_audio.append((audio, user))
+    return "I heard 你好. Nicely done. Pronunciation: 4/5"
+
+
+A.ask = ask_with_audio
+_old_aj = A.ask_json
+_heard = {"transcript": "你好", "romanization": "ni hao"}
+A.ask_json = lambda system, user, max_tokens=0, temperature=None, audio=None: (
+    _sent_audio.append((audio, "blind transcription")) or _heard) if audio else _old_aj(system, user, max_tokens, temperature)
+sent.clear()
+webhook({"update_id": 960, "message": {"message_id": 960, "chat": {"id": 55, "type": "private"},
+                                       "voice": {"file_id": "f1", "mime_type": "audio/ogg", "duration": 2, "file_size": 9000}}})
+got_coaching = any("Pronunciation: 4/5" in t for c_, t in sent)
+check("a voice note is sent to the AI as audio, with the phrase it was meant to say",
+      any(x[0] == (b"OggS-fake-audio", "audio/ogg") and "你好" in x[1] for x in _sent_audio))
+check("it is transcribed blind first (the target is not in that request)", _sent_audio[0][1] == "blind transcription")
+check("how close a transcript is to the target is measured", A.how_close(_heard, dict(text="你好", pron="ni hao")) > 0.9
+      and A.how_close(_heard, dict(text="谢谢你的帮助", pron="xie xie ni de bang zhu")) < 0.5)
+_heard.update(transcript="谢谢", romanization="xiexie")
+sent.clear()
+webhook({"update_id": 965, "message": {"message_id": 965, "chat": {"id": 55, "type": "private"},
+                                       "voice": {"file_id": "f5", "mime_type": "audio/ogg", "duration": 2}}})
+check("a different phrase is reported honestly and rated low, without a coaching call", any("1/5" in t and "谢谢" in t for c_, t in sent))
+_heard.update(transcript="你好", romanization="ni hao")
+check("and the learner gets coaching back", got_coaching)
+N_AUDIO = len(_sent_audio)
+sent.clear()
+webhook({"update_id": 961, "message": {"message_id": 961, "chat": {"id": 55, "type": "private"},
+                                       "voice": {"file_id": "f2", "duration": 300}}})
+check("a very long voice note is declined", any("bit long" in t for c_, t in sent) and len(_sent_audio) == N_AUDIO)
+db.update_plan(pid, speak_target=None)
+sent.clear()
+webhook({"update_id": 962, "message": {"message_id": 962, "chat": {"id": 55, "type": "private"},
+                                       "voice": {"file_id": "f3", "duration": 2}}})
+check("a voice note with nothing to practise gets a gentle nudge", any("/say" in t for c_, t in sent) and len(_sent_audio) == N_AUDIO)
+# inside a quiz: a speaking question is graded and counts
+db.update_plan(pid, pending={"unit": 0, "qs": [dict(q="Say hello", answer="你好", speak=True, target="你好", pron="ni hao"),
+                                              dict(q="Q2?", answer="b")], "i": 0, "score": 0.0},
+               speak_target=dict(text="你好", pron="ni hao", meaning="Say hello"))
+sent.clear()
+webhook({"update_id": 963, "message": {"message_id": 963, "chat": {"id": 55, "type": "private"},
+                                       "voice": {"file_id": "f4", "mime_type": "audio/ogg", "duration": 2}}})
+pe = db.PLANS[pid]["pending"]
+check("a spoken quiz answer is scored from the rating (4/5 = 0.8) and the quiz moves on", pe["i"] == 1 and abs(pe["score"] - 0.8) < 1e-9)
+A.ask, A._http.get, A.ask_json = _old_ask, _old_get, _old_aj
+A.tg = fake_tg
+db.update_plan(pid, pending=None, speak_target=None, voice=False)
+
 print("two messages at once")
 order = []
 orig = A.handle_update
