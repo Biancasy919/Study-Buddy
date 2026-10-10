@@ -328,6 +328,18 @@ def pick_index(q, text):
     return next((k for k, o in enumerate(opts) if o.strip().lower() == t), None)
 
 
+def remember_taught(plan, unit, text, phrases, add=False):
+    """Keep what a lesson actually said, so the quiz on it asks about that and not about the topic in general."""
+    taught = dict(load()[plan["id"]].get("taught") or {})
+    cur = taught.get(unit["title"]) if add else None
+    taught.pop(unit["title"], None)
+    body = (cur["text"] + "\n\n" + text) if cur else text
+    taught[unit["title"]] = dict(text=body[-7000:], phrases=((cur or {}).get("phrases", []) + list(phrases or []))[-20:])
+    for k in list(taught)[:-6]:  # only the last few topics
+        del taught[k]
+    update_plan(plan["id"], taught=taught)
+
+
 def make_quiz(plan, unit, round_no=0, review=True):
     ctx = unit_context(plan, unit)
     exam, practice = bank_excerpt(plan, unit, "exam", 14000), bank_excerpt(plan, unit, "practice", 8000)
@@ -362,10 +374,19 @@ def make_quiz(plan, unit, round_no=0, review=True):
                          f"{unit_context(plan, ru)[:6000]}\n</source>")
     n_rev = len(rev) or (1 if fresh_topic else 0)
     biws_quiz = plan["kind"] == "biws"
+    t = (plan.get("taught") or {}).get(unit["title"]) if not biws_quiz else None
+    taught_rule, taught_block = "", ""
+    if t:
+        ph = "\n".join(f"- {p.get('text', '')} ({p.get('pron', '')}) = {p.get('meaning', '')}" for p in t.get("phrases", []))
+        taught_block = "\n\nWHAT THE LESSON ACTUALLY TAUGHT (the learner has only seen this):\n" + t["text"] + (
+            "\nPhrases taught:\n" + ph if ph else "")
+        taught_rule = (" EVERY question must test something the lesson text or its phrases above actually taught: its own "
+                       "words, phrases, ideas, rules or examples. Never ask about vocabulary, facts or skills the lesson did "
+                       "not teach, even if they belong to the same topic. Use the MATERIAL only to double-check accuracy.")
     d = ask_json(
         (biws.QUIZ_STYLE + " Output JSON: " if biws_quiz else "You write quiz questions that test real understanding, not just recall. Output JSON: ")
         + "{\"questions\": [{\"q\": str, \"answer\": str}]} with exactly " + str(plan["nq"]) + " questions"
-        + type_rules(clean_qtypes(plan.get("qtypes")))
+        + type_rules(clean_qtypes(plan.get("qtypes"))) + taught_rule
         + ("" if biws_quiz else ", progressing from recall to explain-why to application/scenario (repeat that pattern if there are more than 3)")
         + ". \"answer\" is the model answer with the key points a correct answer must include. Difficulty: " + DEPTHS[plan["depth"]] + (
             ' This is a language course with optional voice practice. Judge from the topic: ONLY if it teaches words, phrases, '
@@ -375,7 +396,7 @@ def make_quiz(plan, unit, round_no=0, review=True):
             'romanization/pinyin, and write "q" as an English prompt such as "Say \'Hello, how are you?\' in '
             'Mandarin". "answer" = the target phrase.' if plan.get("voice") and AUDIO_GRADING else "") + (BANK_RULES if bank else ""),
         f"Course: {plan['course']}\nTopic: {unit['title']} ({unit['summary']})\nThis is attempt #{round_no + 1} "
-        f"at this topic; vary the questions if > 1.{learner_notes(plan)}\n\nMATERIAL:\n{ctx or '(none, use general knowledge)'}{bank}{avoid}{rev_block}", 400 + 250 * (plan["nq"] + n_rev) + (120 * plan["nq"] if plan.get("qtypes") else 0), temperature=1.0)
+        f"at this topic; vary the questions if > 1.{learner_notes(plan)}{taught_block}\n\nMATERIAL:\n{ctx or '(none, use general knowledge)'}{bank}{avoid}{rev_block}", 400 + 250 * (plan["nq"] + n_rev) + (120 * plan["nq"] if plan.get("qtypes") else 0), temperature=1.0)
     qs = [shape_question(q) for q in d["questions"] if not q.get("review")][:plan["nq"]]
     topic_of = {m["q"]: m["topic"] for m in rev}
     for q in [q for q in d["questions"] if q.get("review")][:n_rev]:
@@ -642,6 +663,7 @@ def handle_callback(cq):
             [{"text": "📚 Even more", "callback_data": f"more:{idx}"}, {"text": "⚙️ Lesson settings", "callback_data": "set:menu"}]]})
         for ph in phrases:
             send_phrase_audio(chat, plan, ph)
+        remember_taught(plan, unit, text, phrases, add=True)
         return
     if plan and data.startswith("set:"):
         parts = data.split(":")
@@ -1072,6 +1094,7 @@ def deliver_next(plan):
                 send_phrase_audio(chat, plan, ph)
             if phrases:
                 update_plan(plan["id"], phrases={**(load()[plan["id"]].get("phrases") or {}), unit["title"]: phrases})
+            remember_taught(plan, unit, text, phrases)
             update_plan(plan["id"], pending=None)
         else:
             qs = got[1]

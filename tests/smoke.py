@@ -234,6 +234,30 @@ check("on a first round, only earlier topics' misses return", A.pick_review(db.P
 check("on a second round, this topic's misses return too", len(A.pick_review(db.PLANS[pid], units[0], 1)) == 1)
 db.update_plan(pid, missed=[])
 
+print("quizzes follow the lesson")
+u0 = db.PLANS[pid]["units"][0]
+A.remember_taught(db.PLANS[pid], u0, "Jokes use puns. Say: elephant joke.", [dict(text="大象", pron="da xiang", meaning="elephant")])
+A.remember_taught(db.PLANS[pid], u0, "More: homophones.", [], add=True)
+t = db.PLANS[pid]["taught"][u0["title"]]
+check("what was taught is remembered, and 'tell me more' adds to it", "puns" in t["text"] and "homophones" in t["text"] and t["phrases"][0]["text"] == "大象")
+seen_user = []
+_old2 = A.ask_json
+
+
+def spy_ask_json(system, user, max_tokens=0, temperature=None):
+    if "write quiz questions" in system:
+        seen_user.append((system, user))
+        return {"questions": [{"q": "Q1?", "answer": "a"}, {"q": "Q2?", "answer": "b"}, {"q": "Q3?", "answer": "c"}]}
+    return _old2(system, user, max_tokens, temperature)
+
+
+A.ask_json = spy_ask_json
+A.make_quiz(db.PLANS[pid], u0)
+A.ask_json = _old2
+sys_, usr_ = seen_user[-1]
+check("the quiz is told to test only what was taught", "WHAT THE LESSON ACTUALLY TAUGHT" in usr_ and "大象" in usr_ and "did not teach" in sys_)
+db.update_plan(pid, taught={})
+
 print("two messages at once")
 order = []
 orig = A.handle_update
