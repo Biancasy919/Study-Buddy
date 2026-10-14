@@ -374,6 +374,10 @@ big = c.post("/api/plans", json=dict(PLAN, duration="3m", days=[0, 1, 2, 3, 4], 
 check("a long plan writes a first batch and the rest as you go", db.PLANS[big]["target_lessons"] == 32 and db.PLANS[big]["lessons"] == 12
       and db.PLANS[big]["total_sessions"] == 64)
 UN = [dict(week=None, title=f"Lesson {i}", summary="s", files=[]) for i in range(1, 4)]
+cu = c.post("/api/plans", json=dict(PLAN, duration="custom", duration_days=10, days=[0, 2, 4], topic="Cooking")).get_json()["id"]
+check("a custom length (10 days, 3 days a week) is about 4 sessions, 2 lessons", db.PLANS[cu]["target_lessons"] == 2
+      and db.PLANS[cu]["total_sessions"] == 4 and db.PLANS[cu]["duration_days"] == 10 and "for 10 days" in A.describe_schedule(db.PLANS[cu]))
+check("a custom length needs a number", c.post("/api/plans", json=dict(PLAN, duration="custom", topic="Cooking")).status_code == 400)
 db.update_plan(lid, units=UN, status="ready", chat_id=88, language="zh-CN", voice=True, course="Mandarin", step=0, last_sent=None)
 sent.clear()
 A.send_voice_clip = lambda chat, plan, text, caption="": sent.append(("clip", text))

@@ -296,6 +296,12 @@
         <button class="chip sel" data-dur="1m">1 month</button>
         <button class="chip" data-dur="3m">3 months</button>
         <button class="chip" data-dur="forever">♾ Keep going, no end date</button>
+        <button class="chip" data-dur="other">✏️ Other…</button>
+      </div>
+      <div id="dur-other" class="row wrap hide" style="margin-top:12px">
+        <div><label class="f" style="margin-top:0">For</label><input type="number" id="dur-n" min="1" max="730" value="10" style="width:100px"></div>
+        <div><label class="f" style="margin-top:0">&nbsp;</label><select id="dur-unit"><option value="d">days</option><option value="w">weeks</option><option value="m">months</option></select></div>
+        <div><label class="f" style="margin-top:0">…or finish on</label><input type="date" id="dur-date"></div>
       </div>
       <p class="hint" id="dur-hint" style="margin-top:8px"></p>
     </div>

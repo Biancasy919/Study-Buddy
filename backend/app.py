@@ -1841,7 +1841,8 @@ FIRST_BATCH = 12  # lessons written up front; the rest are written as the learne
 def describe_schedule(p):
     s = p["schedule"]
     what = "a lesson, then a quiz on it, alternating" if p["mode"] == "teach_test" else "a quiz"
-    when = f" {DUR_TEXT[p['duration']]}" if p.get("duration") in DUR_TEXT else ""
+    when = f" {DUR_TEXT[p['duration']]}" if p.get("duration") in DUR_TEXT else (
+        f" for {p['duration_days']} days" if p.get("duration") == "custom" and p.get("duration_days") else "")
     return f"Schedule: {what} every {', '.join(DAYS[d] for d in sorted(s['days']))} at {s['time']} ({s['tz']}){when}."
 
 
@@ -2144,12 +2145,18 @@ def create_plan():
         lessons = int(f.get("lessons") or 0) or None
     except (ValueError, TypeError):
         lessons = None
-    dur = f.get("duration") if f.get("duration") in DURATIONS else None
+    dur = f.get("duration") if f.get("duration") in DURATIONS or f.get("duration") == "custom" else None
     target = total = None
+    dur_days = None
+    if dur == "custom":
+        try:
+            dur_days = max(1, min(730, int(f.get("duration_days"))))
+        except (ValueError, TypeError):
+            return jsonify(error="Tell me how long you want to keep going."), 400
     if dur == "forever":
         lessons = 10  # then the next ones are written as the learner goes
     elif dur:
-        sessions = DURATIONS[dur] * len(days)  # sessions = weeks x days a week
+        sessions = max(2, round(dur_days * len(days) / 7)) if dur == "custom" else DURATIONS[dur] * len(days)
         target = max(2, sessions // 2) if mode == "teach_test" else max(2, sessions)
         total = target * (2 if mode == "teach_test" else 1)
         lessons = min(target, FIRST_BATCH)
@@ -2157,7 +2164,7 @@ def create_plan():
     load()[pid] = dict(id=pid, kind=kind, topic=topic, scope=scope, notes=str_("notes", 1500), lessons=lessons, mode=mode,
                        size=size, depth=depth, nq=nq, qtypes=clean_qtypes(f.get("qtypes"), kind), voice=True, language=None, speak_target=None, phrases={}, missed=[],
                        prefs=[], weak=[], history=[], awaiting_feedback=False, course="", units=[], status="new", step=0,
-                       chat_id=None, paused=False, pending=None, last_sent=None, duration=dur, target_lessons=target,
+                       chat_id=None, paused=False, pending=None, last_sent=None, duration=dur, duration_days=dur_days, target_lessons=target,
                        total_sessions=total, finished=False,
                        schedule=dict(days=days, time=f["time"], tz=f["tz"]))
     return jsonify(id=pid)

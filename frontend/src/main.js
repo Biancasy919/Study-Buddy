@@ -71,12 +71,25 @@ function renderQtypes(){
 }
 S.dur="1m";
 const WEEKS={"1w":1,"2w":2,"1m":4,"3m":13};
+function customDays(){
+  const d=$("#dur-date").value;
+  if(d){const diff=Math.ceil((new Date(d+"T23:59:59")-new Date())/86400000);return Math.max(1,Math.min(730,diff))}
+  const n=Math.max(1,parseInt($("#dur-n").value)||1),u={d:1,w:7,m:30}[$("#dur-unit").value];
+  return Math.max(1,Math.min(730,n*u));
+}
 function durHint(){
   const el=$("#dur-hint");if(!el)return;
+  $("#dur-other").classList.toggle("hide",S.dur!=="other");
+  if(S.dur==="other"){
+    const days=customDays(),sessions=Math.max(2,Math.round(days*S.days.size/7)),lessons=S.mode==="teach_test"?Math.max(2,Math.floor(sessions/2)):sessions;
+    el.textContent=S.days.size?`${days} days on your days is about ${sessions} sessions: ${S.mode==="teach_test"?lessons+" lessons, each followed by a quiz":lessons+" quizzes"}. At the end you can add more time or keep going.`:"Pick at least one day.";
+    return}
   if(S.dur==="forever"){el.textContent="I'll keep writing new lessons as you go, building on what you've learned and what you find hard, until you pause it.";return}
   const sessions=WEEKS[S.dur]*S.days.size, lessons=S.mode==="teach_test"?Math.max(2,Math.floor(sessions/2)):Math.max(2,sessions);
   el.textContent=S.days.size?`That's about ${sessions} sessions on your days: ${S.mode==="teach_test"?lessons+" lessons, each followed by a quiz":lessons+" quizzes"}. At the end you can add another month or keep going with no end date.`:"Pick at least one day.";
 }
+["#dur-n","#dur-unit"].forEach(s=>$(s).oninput=()=>{$("#dur-date").value="";durHint()});
+$("#dur-date").oninput=durHint;
 $$("[data-dur]").forEach(b=>b.onclick=()=>{S.dur=b.dataset.dur;$$("[data-dur]").forEach(x=>x.classList.toggle("sel",x===b));durHint()});
 $$("[data-depth]").forEach(b=>b.onclick=()=>{S.depth=b.dataset.depth;$$("[data-depth]").forEach(x=>x.classList.toggle("sel",x===b))});
 // mode, days, tz
@@ -143,8 +156,8 @@ $("#create").onclick=async()=>{
   const body={kind:S.kind,mode:S.mode,size:S.size,depth:S.depth,nq:Math.min(15,Math.max(2,parseInt($("#nq").value)||5)),qtypes:[...S.qtypes],days:[...S.days],time:$("#time").value,tz:$("#tz").value};
   if(S.kind==="smu"){body.notes=$("#notes").value}
   else if(S.kind==="biws"){Object.assign(body,{modules:[...S.biwsMods],optional:$("#biws-opt-days").checked,start:+$("#biws-start").value||1,notes:$("#biws-notes").value})}
-  else if(S.kind==="language"){Object.assign(body,{language:$("#lang").value,level:S.level,focus:[...S.focus].join(", ")||"Everyday conversation",scope:$("#lnotes").value,duration:S.dur})}
-  else{Object.assign(body,{topic:$("#topic").value,scope:$("#scope").value,duration:S.dur})}
+  else if(S.kind==="language"){Object.assign(body,{language:$("#lang").value,level:S.level,focus:[...S.focus].join(", ")||"Everyday conversation",scope:$("#lnotes").value,duration:S.dur==="other"?"custom":S.dur,duration_days:customDays()})}
+  else{Object.assign(body,{topic:$("#topic").value,scope:$("#scope").value,duration:S.dur==="other"?"custom":S.dur,duration_days:customDays()})}
   $("#create").disabled=true;
   try{
     const r=await fetch(API+"/api/plans",{method:"POST",headers:{...JSONH,...biwsHeaders()},body:JSON.stringify(body)});const j=await r.json();
