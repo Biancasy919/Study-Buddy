@@ -21,6 +21,7 @@ function show(n){
     if(b&&!S.biwsDefaults){S.biwsDefaults=true;S.size="topic";$$("[data-size]").forEach(x=>x.classList.toggle("sel",x.dataset.size==="topic"));S.days=new Set([0,1,2,3,4,5]);$$("#days .chip").forEach((c,i)=>c.classList.toggle("sel",S.days.has(i)));$("#time").value="17:00";$("#nq").value=3}
   }
   $$("#steps .st em")[1].textContent=S.kind==="biws"?"Modules":"Material";
+  if(n===2){renderQtypes();$("#dur-block").classList.toggle("hide",S.kind==="smu"||S.kind==="biws");durHint()}
   $$("section.card").forEach(c=>c.classList.toggle("hide",!(+c.dataset.step===n && (!c.dataset.for||c.dataset.for===S.kind))));
   $("#steps").classList.toggle("hide",n<0);$("#brand").classList.toggle("hide",n<0);
   $$("#steps .st").forEach((e,i)=>e.classList.toggle("on",i<=n));
@@ -57,14 +58,32 @@ $$(".drop").forEach(d=>{
 $$("[data-level]").forEach(b=>b.onclick=()=>{S.level=b.dataset.level;$$("[data-level]").forEach(x=>x.classList.toggle("sel",x===b))});
 $$("[data-focus]").forEach(b=>b.onclick=()=>{const v=b.dataset.focus;S.focus.has(v)?S.focus.delete(v):S.focus.add(v);b.classList.toggle("sel")});
 $$("[data-size]").forEach(b=>b.onclick=()=>{S.size=b.dataset.size;$$("[data-size]").forEach(x=>x.classList.toggle("sel",x===b))});
-S.qtypes=new Set(["mcq","open"]);
-$$("[data-qt]").forEach(b=>b.onclick=()=>{const k=b.dataset.qt;if(S.qtypes.has(k)){if(S.qtypes.size>1)S.qtypes.delete(k)}else S.qtypes.add(k);b.classList.toggle("sel",S.qtypes.has(k))});
+const QT_LANG=[["talk","Conversation (reply out loud)"],["say","Repeat after me"],["listen","Listening"],["mcq","Multiple choice"],["fill","Fill in the blank"]];
+const QT_OTHER=[["mcq","Multiple choice"],["tf","True or false"],["open","Open-ended"],["fill","Fill in the blank"]];
+function renderQtypes(){
+  const lang=S.kind==="language";
+  if(S.qtKind!==lang){S.qtKind=lang;S.qtypes=new Set(lang?["talk","say","listen"]:["mcq","open"])}
+  $("#qtypes").innerHTML="";
+  (lang?QT_LANG:QT_OTHER).forEach(([k,label])=>{
+    const c=document.createElement("button");c.className="chip"+(S.qtypes.has(k)?" sel":"");c.textContent=label;
+    c.onclick=()=>{if(S.qtypes.has(k)){if(S.qtypes.size>1)S.qtypes.delete(k)}else S.qtypes.add(k);c.classList.toggle("sel",S.qtypes.has(k))};
+    $("#qtypes").append(c)});
+}
+S.dur="1m";
+const WEEKS={"1w":1,"2w":2,"1m":4,"3m":13};
+function durHint(){
+  const el=$("#dur-hint");if(!el)return;
+  if(S.dur==="forever"){el.textContent="I'll keep writing new lessons as you go, building on what you've learned and what you find hard, until you pause it.";return}
+  const sessions=WEEKS[S.dur]*S.days.size, lessons=S.mode==="teach_test"?Math.max(2,Math.floor(sessions/2)):Math.max(2,sessions);
+  el.textContent=S.days.size?`That's about ${sessions} sessions on your days: ${S.mode==="teach_test"?lessons+" lessons, each followed by a quiz":lessons+" quizzes"}. At the end you can add another month or keep going with no end date.`:"Pick at least one day.";
+}
+$$("[data-dur]").forEach(b=>b.onclick=()=>{S.dur=b.dataset.dur;$$("[data-dur]").forEach(x=>x.classList.toggle("sel",x===b));durHint()});
 $$("[data-depth]").forEach(b=>b.onclick=()=>{S.depth=b.dataset.depth;$$("[data-depth]").forEach(x=>x.classList.toggle("sel",x===b))});
 // mode, days, tz
-$$("[data-mode]").forEach(b=>b.onclick=()=>{S.mode=b.dataset.mode;$$("[data-mode]").forEach(x=>x.classList.toggle("sel",x===b))});
+$$("[data-mode]").forEach(b=>b.onclick=()=>{S.mode=b.dataset.mode;$$("[data-mode]").forEach(x=>x.classList.toggle("sel",x===b));durHint()});
 ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].forEach((d,i)=>{
   const c=document.createElement("button");c.className="chip"+(S.days.has(i)?" sel":"");c.textContent=d;
-  c.onclick=()=>{S.days.has(i)?S.days.delete(i):S.days.add(i);c.classList.toggle("sel")};$("#days").append(c)});
+  c.onclick=()=>{S.days.has(i)?S.days.delete(i):S.days.add(i);c.classList.toggle("sel");durHint()};$("#days").append(c)});
 const zones=Intl.supportedValuesOf?Intl.supportedValuesOf("timeZone"):["Asia/Singapore"];
 const mine=Intl.DateTimeFormat().resolvedOptions().timeZone;
 if(!zones.includes(mine))zones.unshift(mine);
@@ -124,8 +143,8 @@ $("#create").onclick=async()=>{
   const body={kind:S.kind,mode:S.mode,size:S.size,depth:S.depth,nq:Math.min(15,Math.max(2,parseInt($("#nq").value)||5)),qtypes:[...S.qtypes],days:[...S.days],time:$("#time").value,tz:$("#tz").value};
   if(S.kind==="smu"){body.notes=$("#notes").value}
   else if(S.kind==="biws"){Object.assign(body,{modules:[...S.biwsMods],optional:$("#biws-opt-days").checked,start:+$("#biws-start").value||1,notes:$("#biws-notes").value})}
-  else if(S.kind==="language"){Object.assign(body,{language:$("#lang").value,level:S.level,focus:[...S.focus].join(", ")||"Everyday conversation",scope:$("#lnotes").value,lessons:$("#llessons").value})}
-  else{Object.assign(body,{topic:$("#topic").value,scope:$("#scope").value,lessons:$("#lessons").value})}
+  else if(S.kind==="language"){Object.assign(body,{language:$("#lang").value,level:S.level,focus:[...S.focus].join(", ")||"Everyday conversation",scope:$("#lnotes").value,duration:S.dur})}
+  else{Object.assign(body,{topic:$("#topic").value,scope:$("#scope").value,duration:S.dur})}
   $("#create").disabled=true;
   try{
     const r=await fetch(API+"/api/plans",{method:"POST",headers:{...JSONH,...biwsHeaders()},body:JSON.stringify(body)});const j=await r.json();

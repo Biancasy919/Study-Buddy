@@ -245,8 +245,6 @@
     <div class="drop" data-input="lfiles">Drop or click to choose files</div>
     <input type="file" id="lfiles" accept=".pdf,.pptx,.txt,.md" multiple hidden>
     <ul class="files" id="lfiles-list"></ul>
-    <label class="f">How many lessons? (optional, otherwise I'll decide)</label>
-    <input type="number" id="llessons" min="2" max="60" placeholder="e.g. 12">
     <div class="nav"><button class="btn ghost back">← Back</button><button class="btn next">Continue</button></div>
   </section>
 
@@ -261,8 +259,6 @@
     <div class="drop" data-input="cfiles">Drop or click to choose files</div>
     <input type="file" id="cfiles" accept=".pdf,.pptx,.txt,.md" multiple hidden>
     <ul class="files" id="cfiles-list"></ul>
-    <label class="f">How many lessons? (optional, otherwise I'll decide)</label>
-    <input type="number" id="lessons" min="2" max="60" placeholder="e.g. 10">
     <div class="nav"><button class="btn ghost back">← Back</button><button class="btn next">Continue</button></div>
   </section>
 
@@ -288,15 +284,21 @@
     <label class="f">Questions per quiz</label>
     <input type="number" id="nq" value="5" min="2" max="15" step="1" style="width:120px">
     <label class="f">What kinds of questions? <span class="hint">Pick as many as you like</span></label>
-    <div class="chips" id="qtypes">
-      <button class="chip sel" data-qt="mcq">Multiple choice</button>
-      <button class="chip" data-qt="tf">True or false</button>
-      <button class="chip sel" data-qt="open">Open-ended</button>
-      <button class="chip" data-qt="fill">Fill in the blank</button>
-      <button class="chip" data-qt="calc">Calculations</button>
-    </div>
+    <div class="chips" id="qtypes"></div>
+
     <label class="f">Which days?</label>
     <div class="chips" id="days"></div>
+    <div id="dur-block">
+      <label class="f">How long do you want to keep going?</label>
+      <div class="chips" id="durs">
+        <button class="chip" data-dur="1w">1 week</button>
+        <button class="chip" data-dur="2w">2 weeks</button>
+        <button class="chip sel" data-dur="1m">1 month</button>
+        <button class="chip" data-dur="3m">3 months</button>
+        <button class="chip" data-dur="forever">♾ Keep going, no end date</button>
+      </div>
+      <p class="hint" id="dur-hint" style="margin-top:8px"></p>
+    </div>
     <div class="row wrap">
       <div><label class="f">Time</label><input type="time" id="time" value="18:00"></div>
       <div><label class="f">Timezone</label><select id="tz"></select></div>

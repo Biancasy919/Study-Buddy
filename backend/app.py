@@ -82,7 +82,7 @@ def ask(system: str, user: str, max_tokens=3000, temperature=None, audio=None, j
     err = None
     start = time.time()
     # a shared AI gateway is sometimes slow for a minute: don't wait on one model for long, try the next
-    patience = min(40.0, 9.0 + max_tokens / 150)
+    patience = min(30.0, 8.0 + max_tokens / 350)
     content = user
     if audio:  # (bytes, mime): sent to an audio-capable model as a data: URL
         import base64
@@ -134,16 +134,20 @@ def _parse_json(text):
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`")
-        text = text[text.find("{"):] if "{" in text else text
-    chunk = text[text.find("{"): text.rfind("}") + 1] if "{" in text else text
+        text = text[min([i for i in (text.find("{"), text.find("[")) if i >= 0] or [0]):]
+    first = min([i for i in (text.find("{"), text.find("[")) if i >= 0] or [0])
+    if text[first:first + 1] == "[":  # a bare list instead of {"questions": [...]}: wrap it for whichever key is wanted
+        chunk, closer = text[first: text.rfind("]") + 1], list
+    else:
+        chunk, closer = (text[text.find("{"): text.rfind("}") + 1] if "{" in text else text), dict
     try:
-        return json.loads(chunk)
+        out = json.loads(chunk)
     except ValueError:
         import json_repair  # fixes a missing comma, an unescaped quote, a cut-off ending...
         out = json_repair.loads(chunk)
-        if not isinstance(out, dict) or not out:
+        if not out or not isinstance(out, (dict, list)):
             raise
-        return out
+    return {"questions": out, "units": out} if isinstance(out, list) else out
 
 
 def ask_json(system: str, user: str, max_tokens=6000, temperature=None, audio=None):
@@ -265,11 +269,51 @@ BANK_RULES = (" The material includes REAL past exam questions (most important) 
               "secondary source of the same kind. For calculation questions, put the worked solution in \"answer\".")
 
 
+LANG_LESSON = (
+    "You are TOMO, a warm, encouraging language coach teaching over Telegram. This is a SPEAKING-FIRST lesson built on how people "
+    "really learn a language: a clear can-do goal, comprehensible input (a mini-dialogue just above the learner's level), a few "
+    "high-frequency CHUNKS (whole useful phrases, not isolated words), ONE pattern to notice, and an output task to say out "
+    "loud. Plain text only (no markdown symbols like ** or #). Start directly with the Goal line: no greeting or introduction. "
+    "WRITING RULES: write every target-language line in the language's OWN writing system first (Chinese characters like 你好, "
+    "Japanese 日本語, Korean 한국어, Arabic script...; for languages written in Latin letters, normal spelling), then the standard "
+    "romanization in round brackets when the language has one (pinyin with tone marks, romaji, ...; never an English-style "
+    "respelling like 'nee haow'), then the English meaning in square brackets. Example line: 你好！(nǐ hǎo) [Hello!]. "
+    "Use exactly this layout, about 200 words in all:\n"
+    "🎯 Goal: By the end you can <one concrete real-life thing, e.g. order a coffee>.\n"
+    "🎧 Mini-dialogue: 3 or 4 short lines between two people (label them A and B).\n"
+    "🧩 Key phrases: the 3 to 5 chunks to remember, one per line, same line format.\n"
+    "🔍 Notice: ONE pattern or grammar point in two sentences, with a swap-in example (replace X with Y).\n"
+    "🗣 Your turn: one speaking task to do out loud right now.\n"
+    "Stay at the learner's level and focus areas. Be encouraging. Then add a new line with exactly ###DIALOGUE followed by only "
+    "the dialogue lines in the target script (no labels, no romanization, no English), one per line, because they are played "
+    "as audio. Then add a new line with exactly ###PHRASES followed by 3 to 5 lines, one per key phrase: text in the target "
+    "script | romanization | English meaning.")
+
+
 def make_lesson(plan, unit, more=False):
     """Returns (lesson_text, phrases). phrases is [] unless the plan has voice practice on."""
     if more:
         plan = dict(plan, size="topic", depth="deep")
     ctx = unit_context(plan, unit)
+    if plan["kind"] == "language" and not more:
+        text = ask(LANG_LESSON, f"Course: {plan['course']} (language code: {plan.get('language') or 'unknown'})\nLesson: {unit['title']}\nFocus: {unit['summary']}"
+                                f"{learner_notes(plan)}\n\nMATERIAL:\n{ctx or '(none, use general knowledge)'}", 1400)
+        dialogue = ""
+        if "###PHRASES" in text:
+            text, block = text.split("###PHRASES", 1)
+        else:
+            block = ""
+        if "###DIALOGUE" in text:
+            text, dialogue = text.split("###DIALOGUE", 1)
+        phrases = []
+        for line in block.strip().splitlines():
+            parts = [x.strip() for x in line.strip("-• ").split("|")]
+            if len(parts) >= 2 and parts[0]:
+                phrases.append(dict(text=parts[0], pron=parts[1] if len(parts) > 2 else "", meaning=parts[-1]))
+        lines = [l.strip("-• ").strip() for l in dialogue.strip().splitlines() if l.strip()]
+        if lines:  # the whole dialogue plays as one clip, ahead of the phrases
+            phrases = [dict(text="\n".join(lines[:6]), pron="", meaning="🎧 The mini-dialogue", dialogue=True)] + phrases[:5]
+        return re.sub(r"\n(?=[🎧🧩🔍🗣])", "\n\n", text.strip()), phrases[:6]
     voice = ""
     if plan.get("voice"):
         voice = (" Judge from the topic whether hearing it would help. ONLY if this lesson teaches words, phrases, sounds or "
@@ -309,18 +353,29 @@ def pick_review(plan, unit, round_no):
     return ok[: 1 if plan["nq"] <= 3 else 2]
 
 
-QTYPES = {"mcq": "Multiple choice", "tf": "True / false", "open": "Open-ended", "fill": "Fill in the blank", "calc": "Calculation"}
+QTYPES = {"mcq": "Multiple choice", "tf": "True / false", "open": "Open-ended", "fill": "Fill in the blank",
+          "talk": "Conversation (reply out loud)", "say": "Repeat after me", "listen": "Listening"}
+LANG_ONLY = {"talk", "say", "listen"}
+LANG_DEFAULT = ["talk", "say", "listen"]
 
 
-def clean_qtypes(v):
-    out = [t for t in QTYPES if isinstance(v, (list, tuple, set)) and t in v]
-    return out or ["open"]
+def qtypes_for(kind):
+    """The question types a learner can switch on, by kind of plan (calculations are added automatically when they fit)."""
+    return [k for k in QTYPES if kind == "language" or k not in LANG_ONLY]
+
+
+def clean_qtypes(v, kind=None):
+    ok = qtypes_for(kind) if kind else list(QTYPES)
+    out = [t for t in ok if isinstance(v, (list, tuple, set)) and t in v]
+    return out or (LANG_DEFAULT if kind == "language" else ["open"])
 
 
 def type_rules(types):
     if types == ["open"]:
         return ""
-    return (" Use ONLY these question types, spreading them as evenly as you can across the questions: " + ", ".join(types)
+    return (" If the topic is quantitative (finance, accounting, maths, statistics, economics, science), also make some questions "
+            "type calc: a calculation or worked problem with fresh numbers, even when it is not in the list below."
+            " Use ONLY these question types, spreading them as evenly as you can across the questions: " + ", ".join(types)
             + ". Put \"type\" on every question. mcq = multiple choice: \"options\" is exactly 4 short, plausible options "
               "(one right; the wrong ones are common mistakes; never 'all of the above'), \"correct\" is the index 0-3 of the "
               "right one, \"answer\" explains why it is right. tf = a true-or-false claim to judge (tricky but fair): \"tf\" is "
@@ -346,6 +401,17 @@ def shape_question(q):
     elif t == "tf" and isinstance(q.get("tf"), bool):
         q["opts"], q["ci"], q["why"] = ["True", "False"], 0 if q["tf"] else 1, ans
         q["answer"] = f"{'True' if q['tf'] else 'False'}. {ans}"
+    elif t == "listen" and isinstance(opts, list) and len(opts) == 4 and all(isinstance(o, str) for o in opts) \
+            and isinstance(c, int) and 0 <= c < 4 and str(q.get("audio") or "").strip():
+        order = list(range(4))
+        random.shuffle(order)
+        q["opts"], q["ci"], q["why"] = [opts[i] for i in order], order.index(c), ans
+        q["answer"] = f"{'ABCD'[q['ci']]}) {q['opts'][q['ci']]}. {ans}"
+        q["type"] = "mcq"  # answered like multiple choice, with a clip to listen to
+    elif t == "say" and str(q.get("target") or "").strip():
+        q["speak"] = True
+    elif t == "talk" and str(q.get("line") or "").strip():
+        pass
     elif t in ("fill", "calc"):
         pass
     else:
@@ -372,10 +438,38 @@ def remember_taught(plan, unit, text, phrases, add=False):
     cur = taught.get(unit["title"]) if add else None
     taught.pop(unit["title"], None)
     body = (cur["text"] + "\n\n" + text) if cur else text
-    taught[unit["title"]] = dict(text=body[-7000:], phrases=((cur or {}).get("phrases", []) + list(phrases or []))[-20:])
+    taught[unit["title"]] = dict(text=body[-7000:], phrases=((cur or {}).get("phrases", [])
+                                                           + [p for p in (phrases or []) if not p.get("dialogue")])[-20:])
     for k in list(taught)[:-6]:  # only the last few topics
         del taught[k]
     update_plan(plan["id"], taught=taught)
+
+
+def earlier_phrases(plan, unit, k=2):
+    """A couple of phrases from earlier lessons, to bring back for spaced review."""
+    import random
+    titles = [u["title"] for u in plan["units"]]
+    cur = titles.index(unit["title"]) if unit["title"] in titles else 0
+    pool = [p for t in titles[:cur] for p in (plan.get("phrases") or {}).get(t, []) if not p.get("dialogue")]
+    return random.sample(pool, min(k, len(pool)))
+
+
+def lang_quiz_rules(types, plan, unit):
+    old = earlier_phrases(plan, unit)
+    rev = ("\nEARLIER PHRASES (spaced review): make exactly ONE question revisit one of these, in a type from the list: "
+           + "; ".join(f"{p['text']} ({p.get('pron', '')}) = {p.get('meaning', '')}" for p in old) + ".") if old else ""
+    return (" This is a SPOKEN-LANGUAGE quiz: the learner mainly wants to SPEAK. Use ONLY these question types, spread across the "
+            "questions, easiest first (listening first, conversation last): " + ", ".join(types) + ". Put \"type\" on every "
+            "question. say = repeat a phrase out loud: \"speak\": true, \"target\" = the phrase in the target script, "
+            "\"pron\" = its romanization, \"q\" = an English prompt such as Say 'Nice to meet you' in Mandarin, \"answer\" = the "
+            "target phrase. talk = a real-life exchange the learner replies to OUT LOUD: \"line\" = what the other person says "
+            "(short, target script), \"pron\" = its romanization, \"meaning\" = English, \"q\" = a short English situation and "
+            "instruction (e.g. A new classmate greets you. Reply and tell them your name.), \"answer\" = a model reply as "
+            "'script | pronunciation | English' plus what a good reply must do. listen = hear a short target-language line: "
+            "\"audio\" = the line in target script (it is played as sound, so never print it in \"q\"), \"q\" = an English "
+            "question about it (What does she ask?), \"options\" = 4 English choices, \"correct\" = index 0-3, \"answer\" = why. "
+            "mcq and fill are normal written questions about meaning or form. Use ONLY words and phrases the lesson taught, keep "
+            "every line short and natural, and write the romanization carefully (tone marks)." + rev)
 
 
 def make_quiz(plan, unit, round_no=0, review=True):
@@ -412,6 +506,7 @@ def make_quiz(plan, unit, round_no=0, review=True):
                          f"{unit_context(plan, ru)[:6000]}\n</source>")
     n_rev = len(rev) or (1 if fresh_topic else 0)
     biws_quiz = plan["kind"] == "biws"
+    lang = plan["kind"] == "language"
     t = (plan.get("taught") or {}).get(unit["title"]) if not biws_quiz else None
     taught_rule, taught_block = "", ""
     if t:
@@ -424,7 +519,9 @@ def make_quiz(plan, unit, round_no=0, review=True):
     d = ask_json(
         (biws.QUIZ_STYLE + " Output JSON: " if biws_quiz else "You write quiz questions that test real understanding, not just recall. Output JSON: ")
         + "{\"questions\": [{\"q\": str, \"answer\": str}]} with exactly " + str(plan["nq"]) + " questions"
-        + type_rules(clean_qtypes(plan.get("qtypes"))) + taught_rule
+        + (lang_quiz_rules(clean_qtypes(plan.get("qtypes"), "language"), plan, unit)
+           if lang else type_rules(clean_qtypes(plan.get("qtypes"), plan["kind"])) + taught_rule)
+        + (taught_rule if lang else "")
         + ("" if biws_quiz else ", progressing from recall to explain-why to application/scenario (repeat that pattern if there are more than 3)")
         + ". \"answer\" is the model answer with the key points a correct answer must include. Difficulty: " + DEPTHS[plan["depth"]] + (
             ' This is a language course with optional voice practice. The speaking task is allowed even if it is not in the question-type list, and its target must be one of the "Phrases taught" when the lesson taught any. Judge from the topic: ONLY if it teaches words, phrases, '
@@ -432,7 +529,7 @@ def make_quiz(plan, unit, round_no=0, review=True):
             'questions and never set "speak". For a speaking task set "speak": true, '
             '"target": the phrase the student must say aloud in the target language script, "pron": its '
             'romanization/pinyin, and write "q" as an English prompt such as "Say \'Hello, how are you?\' in '
-            'Mandarin". "answer" = the target phrase.' if plan.get("voice") and AUDIO_GRADING else "") + (BANK_RULES if bank else ""),
+            'Mandarin". "answer" = the target phrase.' if plan.get("voice") and AUDIO_GRADING and not lang else "") + (BANK_RULES if bank else ""),
         f"Course: {plan['course']}\nTopic: {unit['title']} ({unit['summary']})\nThis is attempt #{round_no + 1} "
         f"at this topic; vary the questions if > 1.{learner_notes(plan)}{taught_block}\n\nMATERIAL:\n{ctx or '(none, use general knowledge)'}{bank}{avoid}{rev_block}", 400 + 250 * (plan["nq"] + n_rev) + (120 * plan["nq"] if plan.get("qtypes") else 0), temperature=1.0)
     qs = [shape_question(q) for q in d["questions"] if not q.get("review")][:plan["nq"]]
@@ -500,7 +597,20 @@ def tts(text, lang):
     return asyncio.run(run())
 
 
+def send_voice_clip(chat, plan, text, caption="🎧 Listen"):
+    """A spoken clip with only a caption (so a listening question doesn't print the answer)."""
+    try:
+        data = tts(text, plan.get("language"))
+        requests.post(f"https://api.telegram.org/bot{TOKEN}/sendAudio",
+                      data={"chat_id": chat, "caption": caption[:200], "title": "Listen", "performer": "TOMO"},
+                      files={"audio": ("clip.mp3", data, "audio/mpeg")}, timeout=60)
+    except Exception as e:
+        print("tts error:", e)
+
+
 def send_phrase_audio(chat, plan, ph):
+    if ph.get("dialogue"):
+        return send_voice_clip(chat, plan, ph["text"], ph.get("meaning") or "🎧 Listen")
     try:
         data = tts(ph["text"], plan.get("language"))
         cap = f"{ph['text']}\n{ph['pron']}\n{ph['meaning']}".replace("\n\n", "\n").strip()
@@ -532,13 +642,7 @@ def grade_audio(plan, target, audio, mime):
     """Listen to a voice note and coach the pronunciation. The reply ends with 'Pronunciation: X/5'.
     It first writes down what was said WITHOUT being told the target (an AI told the target tends to 'hear' it),
     then compares."""
-    heard = ask_json(
-        "You transcribe a short voice message. Output JSON {\"transcript\": str, \"romanization\": str}: exactly what is "
-        "said, in the language's normal script, even if it is wrong or odd, plus its romanization (e.g. pinyin with tone "
-        "marks) when the language has one. Never guess or autocorrect. If you cannot make out speech, use \"\" for both.",
-        "Transcribe the attached voice message.", 300, 0, audio=(audio, mime))
-    said = (heard.get("transcript") or "").strip()
-    rom = (heard.get("romanization") or "").strip()
+    said, rom, heard = transcribe(audio, mime)
     if not said:
         return ("I couldn't make out any words in that. Try again a little closer to the microphone, in a quiet spot.\n\n"
                 "Pronunciation: 0/5")
@@ -555,6 +659,38 @@ def grade_audio(plan, target, audio, mime):
         f"Blind transcription of the audio: \"{said}\" ({rom}). The voice message is attached.", 450, 0.3, audio=(audio, mime))
 
 
+def judge_reply(plan, q, said, rom="", voice=False):
+    """Grade a reply to a conversation question. Returns (points 0..1, message). Communication first, then accuracy."""
+    d = ask_json(
+        "You are a kind, honest conversation coach for a language learner. They were asked to reply to a line in a "
+        "real-life exchange. Output JSON {\"rating\": number 0-5, \"feedback\": str, \"natural\": str}. Judge, in this order: "
+        "did the reply fit what the other person said and do what the task asked; then grammar and word choice; then (only "
+        "when you were given a voice transcript) whether the words came out clearly enough to be understood. rating: 5 = "
+        "appropriate and correct, 4 = appropriate with a small slip, 3 = understandable but with clear errors, 2 = partly "
+        "off, 1 = barely related, 0 = nothing usable. feedback: under 60 words, plain text: say what worked, then give ONE "
+        "correction as the learner's own sentence said correctly (a recast), then one short tip. natural: one natural way to "
+        "say it, as 'script | pronunciation | English'. Be warm; never harsh.",
+        f"Language course: {plan['course']}\nSituation: {q['q']}\nThe other person says: {q['line']} ({q.get('pron', '')}; "
+        f"{q.get('meaning', '')})\nA good reply: {q['answer']}\n\nLEARNER'S REPLY{' (transcribed from their voice)' if voice else ''}: "
+        f"{said}{f' ({rom})' if rom else ''}", 500, 0.3)
+    try:
+        r = max(0.0, min(5.0, float(d.get("rating", 0))))
+    except (TypeError, ValueError):
+        r = 0.0
+    msg = f"{d.get('feedback', '').strip()}\n\n✨ A natural way to say it:\n{d.get('natural', '').strip()}\n\nScore: {r:g}/5"
+    return r / 5, msg
+
+
+def transcribe(audio, mime):
+    """What was said, written down blind (without being told what it should be)."""
+    h = ask_json(
+        "You transcribe a short voice message. Output JSON {\"transcript\": str, \"romanization\": str}: exactly what is "
+        "said, in the language's normal script, even if it is wrong or odd, plus its romanization (e.g. pinyin with tone "
+        "marks) when the language has one. Never guess or autocorrect. If you cannot make out speech, use \"\" for both.",
+        "Transcribe the attached voice message.", 300, 0, audio=(audio, mime))
+    return (h.get("transcript") or "").strip(), (h.get("romanization") or "").strip(), h
+
+
 def practice_buttons():
     return {"inline_keyboard": [[{"text": "🔊 Hear it again", "callback_data": "say:again"},
                                  {"text": "➡️ Another phrase", "callback_data": "say:next"}]]}
@@ -564,7 +700,8 @@ def offer_phrase(plan, ph=None):
     """Play a phrase and ask the learner to say it back."""
     import random
     if ph is None:
-        pool = [p for u in plan["units"][: current_idx(plan) + 1] for p in (plan.get("phrases") or {}).get(u["title"], [])]
+        pool = [p for u in plan["units"][: current_idx(plan) + 1] for p in (plan.get("phrases") or {}).get(u["title"], [])
+                if not p.get("dialogue")]
         if not pool:
             send(plan["chat_id"], "No phrases yet. Get a lesson first with /next.")
             return
@@ -580,29 +717,43 @@ def handle_voice(chat, v):
     if not plan:
         return
     target, pend = plan.get("speak_target"), plan.get("pending")
-    if not target:
+    q = pend["qs"][pend["i"]] if pend else None
+    talk = bool(q and q.get("type") == "talk" and pend.get("await") != "choice")
+    if not target and not talk:
         send(chat, "Thanks for the voice note! I listen when I've asked you to say something. "
                    "Try /say to get a phrase to practise." if plan.get("voice") else "I can't use voice messages for this plan.")
         return
     if (v.get("duration") or 0) > 60 or (v.get("file_size") or 0) > 5_000_000:
-        send(chat, "That one's a bit long for me. Please send a short voice message (a few seconds) of just the phrase.")
+        send(chat, "That one's a bit long for me. Please send a short voice message (a few seconds).")
         return
     tg("sendChatAction", chat_id=chat, action="typing")
-    in_quiz = bool(pend and pend["qs"][pend["i"]].get("speak"))
+    in_quiz = talk or bool(q and q.get("speak"))
     try:
         path = tg("getFile", file_id=v["file_id"])["result"]["file_path"]
         audio = _http.get(f"https://api.telegram.org/file/bot{TOKEN}/{path}", timeout=45).content
-        fb = grade_audio(plan, target, audio, v.get("mime_type") or "audio/ogg")
+        mime = v.get("mime_type") or "audio/ogg"
+        if talk:
+            said, rom, _ = transcribe(audio, mime)
+            if not said:
+                send(chat, "I couldn't make out any words in that. Try again a little closer to the microphone, in a quiet spot.")
+                return
+            pts, fb = judge_reply(plan, q, said, rom, voice=True)
+            fb = f"I heard: \"{said}\"{f' ({rom})' if rom else ''}\n\n{fb}"
+        else:
+            fb = grade_audio(plan, target, audio, mime)
     except Exception as e:
         print("voice grading error:", e, flush=True)
         if in_quiz:
-            send(chat, f"⚠️ I couldn't check that one{quota_note(e)}, so we'll move on. It was: {target['text']} {target.get('pron', '')}")
+            send(chat, f"⚠️ I couldn't check that one{quota_note(e)}, so we'll move on.")
             update_plan(plan["id"], speak_target=None)
             move_on(plan, pend)
         else:
             send(chat, f"⚠️ I couldn't check that one{quota_note(e)}. Try again in a minute.")
         return
-    if in_quiz:
+    if talk:
+        send(chat, fb)
+        resolve(plan, pend, pts, "(voice message)", fb, ok_at=0.8, reveal=q["answer"])
+    elif in_quiz:
         send(chat, fb)
         m = re.search(r"(\d(?:\.\d)?)\s*/\s*5", fb)
         resolve(plan, pend, min(1.0, float(m.group(1)) / 5) if m else 0.0, "(voice message)", fb, ok_at=0.8)
@@ -705,9 +856,15 @@ def send_question(plan, pend):
         update_plan(plan["id"], speak_target=ph)
         ask_with_skip(plan["chat_id"], f"Question {i+1}/{n} 🎤\n\n{q['q']}\n\nListen below, then send me a voice message.", i)
         send_phrase_audio(plan["chat_id"], plan, dict(ph, meaning="Listen, then record yours"))
+    elif q.get("type") == "talk":
+        update_plan(plan["id"], speak_target=None)
+        ask_with_skip(plan["chat_id"], f"Question {i+1}/{n} 🗣\n\n{q['q']}\n\nReply out loud with a 🎤 voice message (or type your reply).", i)
+        send_voice_clip(plan["chat_id"], plan, q["line"], "🎧 They say this")
     else:
         update_plan(plan["id"], speak_target=None)
-        ask_with_skip(plan["chat_id"], f"Question {i+1}/{n}\n\n{question_body(q)}", i, q)
+        if q.get("audio"):
+            send_voice_clip(plan["chat_id"], plan, q["audio"])
+        ask_with_skip(plan["chat_id"], f"Question {i+1}/{n}{' 🎧' if q.get('audio') else ''}\n\n{question_body(q)}", i, q)
 
 
 def analyze(plan, pend):
@@ -768,6 +925,10 @@ def handle_callback(cq):
         elif parts[1] in FORMATS:
             send_guide_lesson(plan, int(parts[2]), parts[1])
         return
+    if plan and data.startswith("ext:"):
+        if plan.get("finished") or data == "ext:stop":
+            extend_plan(plan, data.split(":")[1])
+        return
     if plan and data.startswith("say:"):
         if data == "say:again" and plan.get("speak_target"):
             send_phrase_audio(chat, plan, plan["speak_target"])
@@ -815,9 +976,10 @@ def handle_callback(cq):
             update_plan(plan["id"], depth=parts[2])
         elif parts[1] == "nq":
             update_plan(plan["id"], nq=max(2, min(15, plan["nq"] + int(parts[2]))))
-        elif parts[1] == "qt" and parts[2] in QTYPES:
-            now = set(clean_qtypes(plan.get("qtypes"))) ^ {parts[2]}
-            update_plan(plan["id"], qtypes=clean_qtypes(now) if now else clean_qtypes(plan.get("qtypes")))
+        elif parts[1] == "qt" and parts[2] in qtypes_for(plan["kind"]):
+            cur = set(clean_qtypes(plan.get("qtypes"), plan["kind"]))
+            now = cur ^ {parts[2]}
+            update_plan(plan["id"], qtypes=clean_qtypes(now, plan["kind"]) if now else clean_qtypes(cur, plan["kind"]))
         elif parts[1] == "fmt":
             pass
         elif parts[1] == "noop":
@@ -856,6 +1018,9 @@ def handle_callback(cq):
                 ph = dict(text=q["target"], pron=q.get("pron", ""), meaning=q["q"])
                 update_plan(plan["id"], speak_target=ph)
                 send_phrase_audio(chat, plan, dict(ph, meaning="Listen, then record yours"))
+            elif q.get("type") == "talk":
+                send(chat, "🔁 Have another go: reply out loud 🎤 (or type it). Practice only, your score stays.")
+                send_voice_clip(chat, plan, q["line"], "🎧 They say this")
             elif q.get("opts"):
                 ask_with_skip(chat, "🔁 Have another go (practice only, your score stays).\n\n" + question_body(q), pend["i"], q)
             else:
@@ -1158,6 +1323,9 @@ def prefetch(plan, step):
     """Write a session ahead of time so it can be sent the moment it's due. Called by the cron tick shortly before a session."""
     if plan.get("kind") == "biws":
         return  # the guide's lessons need no AI, and shorter versions are written (then cached) when first asked for
+    if plan.get("total_sessions") and step >= plan["total_sessions"]:
+        return
+    plan = maybe_extend(plan)
     key = f"prep:{plan['id']}:{step}"
     if db.cache_get(key) is not None:
         return
@@ -1193,9 +1361,9 @@ def settings_view(plan):
             [{"text": ck(plan["depth"], k) + v, "callback_data": f"set:depth:{k}"} for k, v in DEPTH_LABELS.items()],
             [{"text": "➖", "callback_data": "set:nq:-1"}, {"text": f"{plan['nq']} questions", "callback_data": "set:noop"},
              {"text": "➕", "callback_data": "set:nq:1"}]]
-    qt = clean_qtypes(plan.get("qtypes"))
-    btns = [{"text": ("✓ " if k in qt else "") + v, "callback_data": f"set:qt:{k}"} for k, v in QTYPES.items()]
-    rows += [btns[:2], btns[2:4], btns[4:]]
+    qt = clean_qtypes(plan.get("qtypes"), plan["kind"])
+    btns = [{"text": ("✓ " if k in qt else "") + QTYPES[k], "callback_data": f"set:qt:{k}"} for k in qtypes_for(plan["kind"])]
+    rows += [btns[i:i + 2] for i in range(0, len(btns), 2)]
     return (f"⚙️ Settings for {plan['course']}\n\nHow much per lesson (top row), how deep (middle), "
             f"questions per quiz, then the kinds of questions (tap to switch on or off). Changes apply from the next lesson or quiz."), {"inline_keyboard": rows}
 
@@ -1206,6 +1374,12 @@ def deliver_next(plan, silent_retry=False):
     if not units:
         return
     step = plan["step"]
+    if plan.get("total_sessions") and step >= plan["total_sessions"] and plan["kind"] in ("custom", "language"):
+        if not plan.get("finished"):
+            finish_plan(plan)
+        return
+    plan = maybe_extend(plan)
+    units = plan["units"]
     n = len(units)
     if plan["kind"] == "biws" and plan["mode"] == "teach_test" and step >= 2 * n:
         send(plan["chat_id"], "🎉 You've finished every lesson and quiz in your plan! /plan to look back, /goto 1 to start "
@@ -1239,7 +1413,7 @@ def deliver_next(plan, silent_retry=False):
                 if AUDIO_GRADING and plan.get("voice"):
                     send(chat, "🎤 Your turn! Pick a phrase, say it out loud in a voice message, and I'll tell you how it sounded.",
                          {"inline_keyboard": [[{"text": f"🎤 {p['text']}"[:60], "callback_data": f"say:pick:{idx}:{k}"}]
-                                              for k, p in enumerate(phrases[:5])]})
+                                              for k, p in enumerate(phrases) if not p.get("dialogue")][:5]})
             remember_taught(plan, unit, text, phrases)
             update_plan(plan["id"], pending=None)
         else:
@@ -1570,6 +1744,17 @@ def handle_message(msg):
         if q.get("speak"):
             send(chat, "This one needs a 🎤 voice message. Hold the mic button to record, or /skip.")
             return
+        if q.get("type") == "talk" and not q.get("speak") and pend.get("await") != "choice":
+            try:
+                pts, fb = judge_reply(plan, q, text)
+            except Exception as e:
+                print("grading error:", e)
+                send(chat, f"⚠️ I couldn't grade that one{quota_note(e)}, so we'll move on. A good reply: {q['answer']}")
+                move_on(plan, pend)
+                return
+            send(chat, fb)
+            resolve(plan, pend, pts, text, fb, ok_at=0.8, reveal=q["answer"])
+            return
         k = pick_index(q, text) if q.get("opts") and pend.get("await") != "choice" else None
         if k is not None:
             answer_pick(plan, pend, k)
@@ -1648,10 +1833,88 @@ def process_update(u):
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
+DURATIONS = {"1w": 1, "2w": 2, "1m": 4, "3m": 13, "forever": 0}  # weeks (forever: no end)
+DUR_TEXT = {"1w": "for 1 week", "2w": "for 2 weeks", "1m": "for 1 month", "3m": "for 3 months", "forever": "with no end date (until you pause it)"}
+FIRST_BATCH = 12  # lessons written up front; the rest are written as the learner gets near them
+
+
 def describe_schedule(p):
     s = p["schedule"]
     what = "a lesson, then a quiz on it, alternating" if p["mode"] == "teach_test" else "a quiz"
-    return f"Schedule: {what} every {', '.join(DAYS[d] for d in sorted(s['days']))} at {s['time']} ({s['tz']})."
+    when = f" {DUR_TEXT[p['duration']]}" if p.get("duration") in DUR_TEXT else ""
+    return f"Schedule: {what} every {', '.join(DAYS[d] for d in sorted(s['days']))} at {s['time']} ({s['tz']}){when}."
+
+
+def extend_units(plan, n=10):
+    """Write the next lessons of an ongoing course, building on what has been covered and on what the learner finds hard."""
+    have = [u["title"] for u in plan["units"]]
+    weak = list(dict.fromkeys(m["topic"] for m in (plan.get("missed") or [])))[-6:]
+    lang = plan["kind"] == "language"
+    d = ask_json(
+        "You continue a learner's ongoing course by writing the NEXT lessons, in order. Each builds on the previous ones and is "
+        "slightly more advanced; never repeat or rename a lesson already covered; work the learner's weak topics back in. "
+        + ("This is a LANGUAGE course: keep each lesson a real-life situation with new useful phrases, raising the level "
+           "gradually. " if lang else "") +
+        f"Output JSON {{\"units\": [{{\"title\": str, \"summary\": str (1-2 sentences)}}]}} with exactly {n} lessons.",
+        f"TOPIC: {plan['topic']}\nSCOPE / NOTES: {plan.get('scope') or '(none)'}{learner_notes(plan, weak=False)}\n"
+        f"LESSONS SO FAR (oldest to newest):\n- " + "\n- ".join(have[-25:]) + (f"\n\nTOPICS THE LEARNER FINDS HARD: {', '.join(weak)}" if weak else ""),
+        2500)
+    new = [dict(week=None, title=str(u["title"])[:200], summary=str(u.get("summary", ""))[:600], files=[])
+           for u in d.get("units", []) if u.get("title") and u["title"] not in have][:n]
+    if new:
+        update_plan(plan["id"], units=plan["units"] + new)
+    return len(new)
+
+
+def maybe_extend(plan):
+    """Open-ended or long plans: write the next lessons once the learner is close to the end of what exists."""
+    if plan["kind"] not in ("custom", "language"):
+        return plan
+    forever = plan.get("duration") == "forever"
+    target = plan.get("target_lessons")
+    if not forever and not target:
+        return plan
+    done = plan["step"] // 2 if plan["mode"] == "teach_test" else plan["step"]
+    n = len(plan["units"])
+    if n - done > 2 or (not forever and n >= target):
+        return plan
+    try:
+        extend_units(plan, 10 if forever else min(10, target - n))
+    except Exception as e:
+        print("couldn't extend the course:", e, flush=True)
+    return load()[plan["id"]]
+
+
+def finish_plan(plan):
+    """The chosen length is up: say well done, and let the learner carry on or stop."""
+    hist = plan.get("history") or []
+    avg = f" Your average quiz score was {sum(h['score'] for h in hist) / max(1, sum(h['n'] for h in hist)):.0%}." if hist and sum(h["n"] for h in hist) else ""
+    update_plan(plan["id"], finished=True)
+    send(plan["chat_id"], f"🎉 You've finished your plan: {plan['course']}! That's {plan['step']} sessions.{avg}\n\n"
+                          "Want to keep going? I'll carry on from where you are and keep making new lessons.",
+         {"inline_keyboard": [[{"text": "➕ 1 more month", "callback_data": "ext:1m"}],
+                              [{"text": "♾ Keep going, no end date", "callback_data": "ext:forever"}],
+                              [{"text": "🏁 That's enough for now", "callback_data": "ext:stop"}]]})
+
+
+def extend_plan(plan, how):
+    if how == "stop":
+        update_plan(plan["id"], paused=True)
+        send(plan["chat_id"], "Well done! I've paused your plan. /resume or /next any time to carry on.")
+        return
+    if how == "forever":
+        update_plan(plan["id"], duration="forever", target_lessons=None, total_sessions=None, finished=False)
+        send(plan["chat_id"], "♾ No end date. I'll keep writing new lessons as you go. You can /pause any time.")
+    else:
+        days = len(plan["schedule"]["days"])
+        add = 4 * days
+        lessons = max(2, add // 2) if plan["mode"] == "teach_test" else max(2, add)
+        update_plan(plan["id"], target_lessons=(plan.get("target_lessons") or len(plan["units"])) + lessons,
+                    total_sessions=(plan.get("total_sessions") or plan["step"]) + add, finished=False,
+                    duration=plan.get("duration") if plan.get("duration") != "forever" else None)
+        send(plan["chat_id"], "➕ Another month added. Your next lesson is on its way on your usual days.")
+    tg("sendChatAction", chat_id=plan["chat_id"], action="typing")
+    maybe_extend(load()[plan["id"]])
 
 
 def cron_tick(start_by=25.0):
@@ -1665,7 +1928,7 @@ def cron_tick(start_by=25.0):
     due, soon = [], []
     for p in load().values():
         try:
-            if not p.get("chat_id") or p.get("paused") or p["status"] != "ready" or not p["units"]:
+            if not p.get("chat_id") or p.get("paused") or p.get("finished") or p["status"] != "ready" or not p["units"]:
                 continue
             s = p["schedule"]
             now = datetime.now(ZoneInfo(s["tz"]))
@@ -1851,7 +2114,7 @@ def create_plan():
             return jsonify(error="Questions per quiz must be between 2 and 15."), 400
         pid = secrets.token_hex(5)
         load()[pid] = dict(id=pid, kind="biws", topic=biws.TITLE, scope="", notes=str_("notes", 1500), lessons=None,
-                           mode=mode, size=size, depth=depth, nq=nq, qtypes=clean_qtypes(f.get("qtypes")), voice=False, language=None, speak_target=None,
+                           mode=mode, size=size, depth=depth, nq=nq, qtypes=clean_qtypes(f.get("qtypes"), "biws"), voice=False, language=None, speak_target=None,
                            phrases={}, missed=[], prefs=[], weak=[], history=[], awaiting_feedback=False, course=biws.TITLE,
                            units=units, status="ready", step=0, chat_id=None, paused=False, pending=None, last_sent=None,
                            schedule=dict(days=days, time=f["time"], tz=f["tz"]))
@@ -1881,11 +2144,21 @@ def create_plan():
         lessons = int(f.get("lessons") or 0) or None
     except (ValueError, TypeError):
         lessons = None
+    dur = f.get("duration") if f.get("duration") in DURATIONS else None
+    target = total = None
+    if dur == "forever":
+        lessons = 10  # then the next ones are written as the learner goes
+    elif dur:
+        sessions = DURATIONS[dur] * len(days)  # sessions = weeks x days a week
+        target = max(2, sessions // 2) if mode == "teach_test" else max(2, sessions)
+        total = target * (2 if mode == "teach_test" else 1)
+        lessons = min(target, FIRST_BATCH)
     pid = secrets.token_hex(5)
     load()[pid] = dict(id=pid, kind=kind, topic=topic, scope=scope, notes=str_("notes", 1500), lessons=lessons, mode=mode,
-                       size=size, depth=depth, nq=nq, qtypes=clean_qtypes(f.get("qtypes")), voice=True, language=None, speak_target=None, phrases={}, missed=[],
+                       size=size, depth=depth, nq=nq, qtypes=clean_qtypes(f.get("qtypes"), kind), voice=True, language=None, speak_target=None, phrases={}, missed=[],
                        prefs=[], weak=[], history=[], awaiting_feedback=False, course="", units=[], status="new", step=0,
-                       chat_id=None, paused=False, pending=None, last_sent=None,
+                       chat_id=None, paused=False, pending=None, last_sent=None, duration=dur, target_lessons=target,
+                       total_sessions=total, finished=False,
                        schedule=dict(days=days, time=f["time"], tz=f["tz"]))
     return jsonify(id=pid)
 
@@ -2029,6 +2302,10 @@ if FRONTEND_DIR.exists():  # serve the website too, so one command runs everythi
 def run_local():
     """Local development: Telegram can't reach your computer, so poll for messages and tick the scheduler ourselves."""
     import threading
+    if os.getenv("LOCAL_NO_TELEGRAM"):  # just the website and API, to try the pages without touching any bot
+        db.ensure_schema()
+        print(f"Website and API only: http://localhost:{PORT}", flush=True)
+        return app.run(host=os.getenv("HOST", "127.0.0.1"), port=PORT)
     if not TOKEN:
         raise SystemExit("Set TELEGRAM_BOT_TOKEN in .env first.")
     me = tg("getMe")

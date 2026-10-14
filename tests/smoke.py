@@ -332,6 +332,8 @@ d = REAL_ASK_JSON("s", "u")
 check("a missing comma in a long answer is repaired, not fatal", len(d["questions"]) == 2 and d["questions"][0]["q"] == 'What is "MOIC"?')
 _texts[:] = ["not json at all", '{"ok": 1}']
 check("an unreadable answer is asked for again once", REAL_ASK_JSON("s", "u") == {"ok": 1})
+_texts[:] = ['[{"q": "A?", "answer": "a"}, {"q": "B?", "answer": "b"}]']
+check("a bare list of questions is accepted as the questions", [q["q"] for q in REAL_ASK_JSON("s", "u")["questions"]] == ["A?", "B?"])
 _texts[:] = ["nope", "still nope"]
 try:
     REAL_ASK_JSON("s", "u"); raised = False
@@ -339,6 +341,97 @@ except RuntimeError as e:
     raised = "garbled" in str(e)
 check("after two bad answers the learner gets a plain message, not a stack trace", raised)
 A.ask = _ai_ask_backup
+
+print("language lessons and conversation")
+check("language plans default to speaking-first question types", A.clean_qtypes(None, "language") == ["talk", "say", "listen"]
+      and A.clean_qtypes(["talk", "tf"], "custom") == ["tf"] and "calc" not in A.QTYPES)
+q_ = A.shape_question(dict(type="talk", q="s", answer="a"))
+q2 = A.shape_question(dict(type="talk", q="s", line="你好", answer="a"))
+q3 = A.shape_question(dict(type="listen", audio="你好", q="What?", options=["Hello", "Bye", "Thanks", "Sorry"], correct=0, answer="x"))
+q4 = A.shape_question(dict(type="say", q="Say hi", target="你好", pron="nǐ hǎo", answer="你好"))
+check("question shapes: talk needs a line, listening becomes a tap question with a clip, say becomes a speaking task",
+      q_["type"] == "open" and q2["type"] == "talk" and q3["type"] == "mcq" and q3["audio"] == "你好"
+      and q3["opts"][q3["ci"]] == "Hello" and q4["speak"] is True)
+_lesson = ("🎯 Goal: greet.\n🎧 Mini-dialogue:\nA: 你好！(nǐ hǎo) [Hello!]\n🧩 Key phrases:\n你好！(nǐ hǎo) [Hello!]\n🔍 Notice: x\n🗣 Your turn: say it\n"
+           "###DIALOGUE\n你好！\n再见！\n###PHRASES\n你好！ | nǐ hǎo | Hello\n再见！ | zàijiàn | Goodbye")
+_old_ask2 = A.ask
+A.ask = lambda *a, **k: _lesson
+lp = dict(db.PLANS[pid], kind="language", language="zh-CN", course="Mandarin")
+txt, phs = A.make_lesson(lp, db.PLANS[pid]["units"][0])
+A.ask = _old_ask2
+check("a language lesson keeps its sections apart, plays the dialogue as one clip, and lists the key phrases",
+      "\n\n🎧" in txt and "###" not in txt and phs[0].get("dialogue") and "你好" in phs[0]["text"] and len(phs) == 3 and phs[1]["pron"] == "nǐ hǎo")
+
+# a conversation question, answered by typing and by voice
+lid = c.post("/api/plans", json=dict(PLAN, kind="language", language="Mandarin", level="Beginner", duration="1m", days=[0, 2, 4])).get_json()["id"]
+check("a 1-month plan on 3 days a week is 6 lessons (12 sessions), and says so",
+      db.PLANS[lid]["target_lessons"] == 6 and db.PLANS[lid]["total_sessions"] == 12 and db.PLANS[lid]["duration"] == "1m"
+      and db.PLANS[lid]["qtypes"] == ["talk", "say", "listen"])
+check("keep-going plans have no end and start with a first batch",
+      (lambda i: db.PLANS[i]["total_sessions"] is None and db.PLANS[i]["target_lessons"] is None)(
+          c.post("/api/plans", json=dict(PLAN, duration="forever", topic="Finance")).get_json()["id"]))
+big = c.post("/api/plans", json=dict(PLAN, duration="3m", days=[0, 1, 2, 3, 4], topic="Finance")).get_json()["id"]
+check("a long plan writes a first batch and the rest as you go", db.PLANS[big]["target_lessons"] == 32 and db.PLANS[big]["lessons"] == 12
+      and db.PLANS[big]["total_sessions"] == 64)
+UN = [dict(week=None, title=f"Lesson {i}", summary="s", files=[]) for i in range(1, 4)]
+db.update_plan(lid, units=UN, status="ready", chat_id=88, language="zh-CN", voice=True, course="Mandarin", step=0, last_sent=None)
+sent.clear()
+A.send_voice_clip = lambda chat, plan, text, caption="": sent.append(("clip", text))
+TALK = dict(type="talk", q="A classmate greets you. Greet them back.", line="你好！", pron="nǐ hǎo", meaning="Hello", answer="你好 | nǐ hǎo | Hello")
+db.update_plan(lid, pending={"unit": 0, "qs": [TALK, dict(q="Q2?", answer="b")], "i": 0, "score": 0.0})
+A.send_question(db.PLANS[lid], db.PLANS[lid]["pending"])
+check("a conversation question plays what the other person says", ("clip", "你好！") in sent and any("Reply out loud" in str(t) for c_, t in sent))
+_old_aj3 = A.ask_json
+A.ask_json = lambda system, user, max_tokens=0, temperature=None, audio=None: (
+    {"transcript": "你好", "romanization": "nǐ hǎo"} if audio else {"rating": 4, "feedback": "Nice reply.", "natural": "你好 | nǐ hǎo | Hello"})
+sent.clear()
+webhook(upd(970, 88, "你好"))
+pe = db.PLANS[lid]["pending"]
+check("a typed reply to a conversation question is coached and scored (4/5 = 0.8)", pe["i"] == 1 and abs(pe["score"] - 0.8) < 1e-9
+      and any("natural way to say it" in t for c_, t in sent))
+db.update_plan(lid, pending={"unit": 0, "qs": [TALK, dict(q="Q2?", answer="b")], "i": 0, "score": 0.0})
+A._http.get = lambda url, **k: type("R", (), {"content": b"aud"})()
+A.tg = lambda m, **k: ({"ok": True, "result": {"file_path": "v/a.oga"}} if m == "getFile" else fake_tg(m, **k))
+sent.clear()
+webhook({"update_id": 971, "message": {"message_id": 971, "chat": {"id": 88, "type": "private"},
+                                       "voice": {"file_id": "x", "mime_type": "audio/ogg", "duration": 3}}})
+check("a spoken reply is transcribed, shown back, coached and scored", db.PLANS[lid]["pending"]["i"] == 1
+      and any("I heard" in t and "你好" in t for c_, t in sent))
+A.ask_json = _old_aj3
+A.tg = fake_tg
+db.update_plan(lid, pending=None)
+
+print("duration: keep going, or finish")
+_titles = iter(range(100, 200))
+A.ask_json = lambda system, user, max_tokens=0, temperature=None, audio=None: {"units": [dict(title=f"New {next(_titles)}", summary="s") for _ in range(10)]}
+db.update_plan(lid, units=UN, target_lessons=6, total_sessions=12, duration="1m", step=3, finished=False)
+A.maybe_extend(db.PLANS[lid])
+check("when the lessons run low, the next ones are written (only up to the plan's length)", len(db.PLANS[lid]["units"]) == 6)
+db.update_plan(lid, units=UN, duration="forever", target_lessons=None, total_sessions=None, step=5)
+A.maybe_extend(db.PLANS[lid])
+check("with no end date, ten more are added each time", len(db.PLANS[lid]["units"]) == 13)
+db.update_plan(lid, units=UN, duration="1m", target_lessons=6, total_sessions=12, step=12, finished=False)
+sent.clear()
+A.deliver_next(db.PLANS[lid])
+check("at the end of the chosen length the learner is congratulated and offered more", db.PLANS[lid]["finished"]
+      and any("finished your plan" in t for c_, t in sent) and db.PLANS[lid]["step"] == 12)
+_due = c.get("/api/cron?key=cs").get_json()
+check("a finished plan is not sent anything more", not any(chat == 88 and "Lesson" in str(t) for chat, t in sent[1:]))
+def ext_tap(uid, data):
+    return webhook({"update_id": uid, "callback_query": {"id": f"e{uid}", "data": data,
+                    "message": {"message_id": uid, "chat": {"id": 88, "type": "private"}}}})
+ext_tap(980, "ext:1m")
+pl = db.PLANS[lid]
+check("'1 more month' adds sessions and carries on", not pl["finished"] and pl["total_sessions"] == 12 + 12 and pl["target_lessons"] == 6 + 6)
+db.update_plan(lid, finished=True)
+ext_tap(981, "ext:forever")
+pl = db.PLANS[lid]
+check("'keep going' removes the end date", not pl["finished"] and pl["total_sessions"] is None and pl["duration"] == "forever")
+db.update_plan(lid, finished=True, paused=False)
+ext_tap(982, "ext:stop")
+check("'that's enough' pauses the plan", db.PLANS[lid]["paused"] is True)
+A.ask_json = _old_aj3
+db.update_plan(lid, paused=False)
 
 print("two messages at once")
 order = []
