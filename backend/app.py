@@ -574,27 +574,88 @@ def tg(method, **params):
 _voices = None
 
 
-def tts(text, lang):
-    """Text -> mp3 bytes with a free neural voice (edge-tts)."""
+EDGE_VOICES = {"zh-CN": "zh-CN-XiaoxiaoNeural", "zh-TW": "zh-TW-HsiaoChenNeural", "ja-JP": "ja-JP-NanamiNeural",
+               "ko-KR": "ko-KR-SunHiNeural", "es-ES": "es-ES-ElviraNeural", "es-MX": "es-MX-DaliaNeural",
+               "fr-FR": "fr-FR-DeniseNeural", "de-DE": "de-DE-KatjaNeural", "it-IT": "it-IT-ElsaNeural",
+               "pt-BR": "pt-BR-FranciscaNeural", "pt-PT": "pt-PT-RaquelNeural", "ru-RU": "ru-RU-SvetlanaNeural",
+               "ar-SA": "ar-SA-ZariyahNeural", "hi-IN": "hi-IN-SwaraNeural", "th-TH": "th-TH-PremwadeeNeural",
+               "vi-VN": "vi-VN-HoaiMyNeural", "id-ID": "id-ID-GadisNeural", "en-US": "en-US-JennyNeural",
+               "en-GB": "en-GB-SoniaNeural", "tr-TR": "tr-TR-EmelNeural", "nl-NL": "nl-NL-ColetteNeural"}
+
+
+def _edge_tts(text, lang):
+    """Microsoft's free neural voices (edge-tts). Gives up after a few seconds so a stuck connection can't hold a reply."""
     import asyncio
     import edge_tts
 
     async def run():
-        global _voices
-        if _voices is None:
-            _voices = await edge_tts.list_voices()
-        lang_l = (lang or "en-US").lower()
-        cands = ([v for v in _voices if v["Locale"].lower() == lang_l]
-                 or [v for v in _voices if v["Locale"].lower().startswith(lang_l.split("-")[0])])
-        if not cands:
-            raise RuntimeError(f"no voice for {lang}")
-        voice = next((v for v in cands if v["Gender"] == "Female"), cands[0])["ShortName"]
+        voice = EDGE_VOICES.get(lang or "en-US")
+        if not voice:
+            voices = await edge_tts.list_voices()
+            lang_l = (lang or "en-US").lower()
+            cands = ([v for v in voices if v["Locale"].lower() == lang_l]
+                     or [v for v in voices if v["Locale"].lower().startswith(lang_l.split("-")[0])])
+            if not cands:
+                raise RuntimeError(f"no voice for {lang}")
+            voice = next((v for v in cands if v["Gender"] == "Female"), cands[0])["ShortName"]
         out = bytearray()
         async for ch in edge_tts.Communicate(text, voice).stream():
             if ch["type"] == "audio":
                 out += ch["data"]
         return bytes(out)
-    return asyncio.run(run())
+
+    async def guarded():
+        return await asyncio.wait_for(run(), timeout=7)
+    return asyncio.run(guarded())
+
+
+def _google_tts(text, lang):
+    """A simple backup voice (Google Translate's), used when the first one is unavailable."""
+    tl = lang if lang in ("zh-CN", "zh-TW") else (lang or "en").split("-")[0]
+    chunks, cur = [], ""
+    for line in re.split(r"(?<=[\n。！？.!?])", text):
+        if len(cur) + len(line) > 170 and cur:
+            chunks.append(cur)
+            cur = ""
+        cur += line
+    if cur.strip():
+        chunks.append(cur)
+    out = b""
+    for ch in chunks:
+        r = _http.get("https://translate.google.com/translate_tts",
+                      params=dict(ie="UTF-8", client="tw-ob", tl=tl, q=ch.strip()),
+                      headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+        r.raise_for_status()
+        out += r.content
+    return out
+
+
+def tts(text, lang):
+    """Text -> mp3 bytes. Clips are remembered, so playing one again is instant; if one voice is down the other is used."""
+    import base64
+    import hashlib
+    key = "tts:" + hashlib.sha1(f"{lang}|{text}".encode()).hexdigest()[:20]
+    hit = db.cache_get(key)
+    if hit:
+        return base64.b64decode(hit["b"])
+    order = [_edge_tts, _google_tts]
+    bad = db.cache_get("tts:edge_bad")
+    if bad and time.time() - bad["t"] < 1800:  # the first voice failed lately: don't make the learner wait on it again
+        order.reverse()
+    err = None
+    for fn in order:
+        try:
+            data = fn(text, lang)
+            if data and len(data) > 500:
+                db.cache_put(key, {"b": base64.b64encode(data).decode()})
+                return data
+            err = RuntimeError("the voice returned no sound")
+        except Exception as e:
+            err = e
+            print("voice failed:", fn.__name__, repr(e)[:120], flush=True)
+            if fn is _edge_tts:
+                db.cache_put("tts:edge_bad", {"t": time.time()})
+    raise err or RuntimeError("no voice available")
 
 
 def send_voice_clip(chat, plan, text, caption="🎧 Listen"):
@@ -605,7 +666,8 @@ def send_voice_clip(chat, plan, text, caption="🎧 Listen"):
                       data={"chat_id": chat, "caption": caption[:200], "title": "Listen", "performer": "TOMO"},
                       files={"audio": ("clip.mp3", data, "audio/mpeg")}, timeout=60)
     except Exception as e:
-        print("tts error:", e)
+        print("tts error:", e, flush=True)
+        send(chat, "🔇 I couldn't make the audio just now. Please tap again in a moment.")
 
 
 def send_phrase_audio(chat, plan, ph):
@@ -618,7 +680,8 @@ def send_phrase_audio(chat, plan, ph):
                       data={"chat_id": chat, "caption": cap[:1000], "title": ph["text"][:60], "performer": "Tutor"},
                       files={"audio": ("phrase.mp3", data, "audio/mpeg")}, timeout=60)
     except Exception as e:
-        print("tts error:", e)
+        print("tts error:", e, flush=True)
+        send(chat, "🔇 I couldn't make the audio just now. Please tap again in a moment.")
 
 
 def _sound_key(s):
@@ -691,9 +754,10 @@ def transcribe(audio, mime):
     return (h.get("transcript") or "").strip(), (h.get("romanization") or "").strip(), h
 
 
-def practice_buttons():
+def practice_buttons(plan):
     return {"inline_keyboard": [[{"text": "🔊 Hear it again", "callback_data": "say:again"},
-                                 {"text": "➡️ Another phrase", "callback_data": "say:next"}]]}
+                                 {"text": "➡️ Another phrase", "callback_data": "say:next"}],
+                                [{"text": "📝 Quiz me on this", "callback_data": f"quiz:{current_idx(plan)}"}]]}
 
 
 def offer_phrase(plan, ph=None):
@@ -708,7 +772,7 @@ def offer_phrase(plan, ph=None):
         ph = random.choice(pool)
     update_plan(plan["id"], speak_target=ph)
     send(plan["chat_id"], f"🎧 Listen, then hold the 🎤 and say it out loud:\n{ph['text']}  {ph['pron']}\n({ph['meaning']})\n\n"
-                          "Send me a voice message and I'll tell you how it sounded.", practice_buttons())
+                          "Send me a voice message and I'll tell you how it sounded.", practice_buttons(plan))
     send_phrase_audio(plan["chat_id"], plan, ph)
 
 
@@ -758,7 +822,7 @@ def handle_voice(chat, v):
         m = re.search(r"(\d(?:\.\d)?)\s*/\s*5", fb)
         resolve(plan, pend, min(1.0, float(m.group(1)) / 5) if m else 0.0, "(voice message)", fb, ok_at=0.8)
     else:
-        send(chat, fb, practice_buttons())
+        send(chat, fb, practice_buttons(plan))
 
 
 def move_on(plan, pend):
@@ -1413,7 +1477,8 @@ def deliver_next(plan, silent_retry=False):
                 if AUDIO_GRADING and plan.get("voice"):
                     send(chat, "🎤 Your turn! Pick a phrase, say it out loud in a voice message, and I'll tell you how it sounded.",
                          {"inline_keyboard": [[{"text": f"🎤 {p['text']}"[:60], "callback_data": f"say:pick:{idx}:{k}"}]
-                                              for k, p in enumerate(phrases) if not p.get("dialogue")][:5]})
+                                              for k, p in enumerate(phrases) if not p.get("dialogue")][:5]
+                                             + [[{"text": "📝 Quiz me on this", "callback_data": f"quiz:{idx}"}]]})
             remember_taught(plan, unit, text, phrases)
             update_plan(plan["id"], pending=None)
         else:
@@ -2070,6 +2135,21 @@ def setup():
     url = f"https://{request.host}/api/telegram"
     r = tg("setWebhook", url=url, secret_token=webhook_secret(), allowed_updates=["message", "callback_query"])
     return jsonify(webhook=url, telegram=r, info=tg("getWebhookInfo").get("result"), bot=bot_username())
+
+
+@app.get("/api/diag/tts")
+def diag_tts():
+    """Which voices work from this server, and how fast. Needs the CRON_SECRET."""
+    if not secret_ok():
+        return jsonify(error="Not allowed."), 403
+    out = {}
+    for name, fn in (("edge", _edge_tts), ("google", _google_tts)):
+        t = time.time()
+        try:
+            out[name] = dict(ok=True, bytes=len(fn("你好，很高兴认识你", "zh-CN")), seconds=round(time.time() - t, 1))
+        except Exception as e:
+            out[name] = dict(ok=False, error=repr(e)[:160], seconds=round(time.time() - t, 1))
+    return jsonify(out)
 
 
 @app.get("/api/health")

@@ -437,6 +437,23 @@ check("'that's enough' pauses the plan", db.PLANS[lid]["paused"] is True)
 A.ask_json = _old_aj3
 db.update_plan(lid, paused=False)
 
+print("voices")
+_calls = []
+def _edge_fail(text, lang):
+    _calls.append("edge"); raise RuntimeError("blocked")
+def _google_ok(text, lang):
+    _calls.append("google"); return b"x" * 900
+_e0, _g0 = A._edge_tts, A._google_tts
+A._edge_tts, A._google_tts = _edge_fail, _google_ok
+check("if the first voice fails, the backup is used", A.tts("你好", "zh-CN") == b"x" * 900 and _calls == ["edge", "google"])
+_calls.clear()
+check("the same clip is not made twice", A.tts("你好", "zh-CN") == b"x" * 900 and _calls == [])
+check("and a voice that failed lately is not tried first next time", A.tts("再见", "zh-CN") == b"x" * 900 and _calls == ["google"])
+A._edge_tts, A._google_tts = _e0, _g0
+pb = A.practice_buttons(db.PLANS[pid])["inline_keyboard"]
+check("after practising a phrase there is still a way to the quiz", any(b["callback_data"].startswith("quiz:") for row in pb for b in row)
+      and any(b["callback_data"] == "say:again" for row in pb for b in row))
+
 print("two messages at once")
 order = []
 orig = A.handle_update
