@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 import app as A  # noqa: E402
 import db  # noqa: E402
 
+REAL_ASK_JSON = A.ask_json
 REAL_ASK = A.ask  # the stubs below replace it; the AI-call tests put it back
 
 OK = BAD = 0
@@ -321,6 +322,24 @@ A.ask, A._http.get, A.ask_json = _old_ask, _old_get, _old_aj
 A.tg = fake_tg
 db.update_plan(pid, pending=None, speak_target=None, voice=False)
 
+_ai_ask_backup = A.ask
+print("garbled AI answers")
+_texts = []
+A.ask = lambda *a, **k: _texts.pop(0)
+broken = '{"questions": [{"q": "What is \\"MOIC\\"?", "answer": "x"} {"q": "Second?", "answer": "y"}]}'
+_texts[:] = [broken]
+d = REAL_ASK_JSON("s", "u")
+check("a missing comma in a long answer is repaired, not fatal", len(d["questions"]) == 2 and d["questions"][0]["q"] == 'What is "MOIC"?')
+_texts[:] = ["not json at all", '{"ok": 1}']
+check("an unreadable answer is asked for again once", REAL_ASK_JSON("s", "u") == {"ok": 1})
+_texts[:] = ["nope", "still nope"]
+try:
+    REAL_ASK_JSON("s", "u"); raised = False
+except RuntimeError as e:
+    raised = "garbled" in str(e)
+check("after two bad answers the learner gets a plain message, not a stack trace", raised)
+A.ask = _ai_ask_backup
+
 print("two messages at once")
 order = []
 orig = A.handle_update
@@ -353,6 +372,32 @@ db.update_plan(pid, pending=None, step=0, last_sent=None, schedule=schedule(-3))
 sent.clear()
 r = c.get("/api/cron?key=cs").get_json()
 check("a due session is sent", r["sent"] == 1 and any("Lesson 1" in t for c_, t in sent) and db.PLANS[pid]["step"] == 1)
+print("a failed scheduled session is retried quietly")
+db.update_plan(pid, pending=None, step=0, last_sent=None, schedule=schedule(-3))
+_fail = {"n": 0}
+_old_get_prepared = A.get_prepared
+
+
+def failing_prepared(plan, step):
+    _fail["n"] += 1
+    raise RuntimeError("boom")
+
+
+A.get_prepared = failing_prepared
+sent.clear()
+c.get("/api/cron?key=cs")
+check("the first failure says nothing to the learner and frees the slot", not any("couldn't prepare" in t for c_, t in sent)
+      and db.PLANS[pid]["last_sent"] is None and db.PLANS[pid]["step"] == 0)
+c.get("/api/cron?key=cs")
+c.get("/api/cron?key=cs")
+check("after the retries it tells the learner once, plainly", sum("couldn't prepare" in t for c_, t in sent) == 1
+      and "boom" not in " ".join(t for c_, t in sent))
+A.get_prepared = _old_get_prepared
+db.update_plan(pid, last_sent=None, step=0)
+sent.clear()
+c.get("/api/cron?key=cs")
+check("and once the AI is back the session is sent", any("Lesson 1" in t for c_, t in sent))
+
 sent.clear()
 r = c.get("/api/cron", headers={"Authorization": "Bearer cs"}).get_json()
 check("and not sent twice in a day (Vercel-style auth header works too)", r["sent"] == 0 and sent == [])

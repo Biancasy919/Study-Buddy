@@ -3,3 +3,4 @@ requests==2.34.2
 psycopg[binary]==3.3.6
 edge-tts==7.2.8
 python-dotenv==1.2.4
+json-repair==0.64.0

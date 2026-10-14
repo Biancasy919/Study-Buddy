@@ -75,7 +75,7 @@ def quota_note(e):
 
 
 # ---------------------------------------------------------------- AI (any OpenAI-compatible API)
-def ask(system: str, user: str, max_tokens=3000, temperature=None, audio=None) -> str:
+def ask(system: str, user: str, max_tokens=3000, temperature=None, audio=None, json_mode=False) -> str:
     if not llm:
         raise RuntimeError("No AI key set on the server (LLM_API_KEY).")
     db.budget_check()
@@ -99,6 +99,8 @@ def ask(system: str, user: str, max_tokens=3000, temperature=None, audio=None) -
                     "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}]}
             if temperature is not None:
                 body["temperature"] = temperature
+            if json_mode and not audio:
+                body["response_format"] = {"type": "json_object"}
             try:
                 r = _http.post(f"{LLM_BASE_URL}/chat/completions", headers={"Authorization": f"Bearer {LLM_API_KEY}"},
                                json=body, timeout=max(4.0, min(patience, left)))
@@ -113,6 +115,9 @@ def ask(system: str, user: str, max_tokens=3000, temperature=None, audio=None) -
                 if attempt == 0:
                     time.sleep(1.2)
                 continue
+            if r.status_code == 400 and json_mode and "response_format" in body:
+                json_mode = False  # this model doesn't do strict JSON mode: ask the plain way
+                continue
             if r.status_code >= 400:
                 raise RuntimeError(f"AI service error {r.status_code}: {r.text[:200]}")
             j = r.json()
@@ -125,9 +130,33 @@ def ask(system: str, user: str, max_tokens=3000, temperature=None, audio=None) -
     raise err or RuntimeError("The AI service didn't answer.")
 
 
+def _parse_json(text):
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        text = text[text.find("{"):] if "{" in text else text
+    chunk = text[text.find("{"): text.rfind("}") + 1] if "{" in text else text
+    try:
+        return json.loads(chunk)
+    except ValueError:
+        import json_repair  # fixes a missing comma, an unescaped quote, a cut-off ending...
+        out = json_repair.loads(chunk)
+        if not isinstance(out, dict) or not out:
+            raise
+        return out
+
+
 def ask_json(system: str, user: str, max_tokens=6000, temperature=None, audio=None):
-    text = ask(system + "\nReturn ONLY valid JSON, no prose, no code fences.", user, max_tokens, temperature, audio=audio)
-    return json.loads(text[text.find("{"): text.rfind("}") + 1] if "{" in text else text)
+    sysmsg = system + "\nReturn ONLY valid JSON, no prose, no code fences. Escape any double quote inside a string as \\\"."
+    last = None
+    for attempt in range(2):  # a long answer occasionally comes back with a broken bracket or quote: once more, calmly
+        text = ask(sysmsg, user, max_tokens, temperature if attempt == 0 else 0.2, audio=audio, json_mode=True)
+        try:
+            return _parse_json(text)
+        except ValueError as e:
+            last = e
+            print("unreadable JSON from the AI, retrying:", e, flush=True)
+    raise RuntimeError("The AI's answer came back garbled twice. Please try again in a moment.") from last
 
 
 def build_syllabus(plan, materials):
@@ -1171,7 +1200,7 @@ def settings_view(plan):
             f"questions per quiz, then the kinds of questions (tap to switch on or off). Changes apply from the next lesson or quiz."), {"inline_keyboard": rows}
 
 
-def deliver_next(plan):
+def deliver_next(plan, silent_retry=False):
     """Send the next scheduled item (lesson or quiz) and advance the plan."""
     units = plan["units"]
     if not units:
@@ -1219,8 +1248,13 @@ def deliver_next(plan):
                        f"{' (' + str(sum(1 for q in qs if q.get('review'))) + ' review from earlier topics)' if any(q.get('review') for q in qs) else ''}. "
                        f"Answer each as it comes, or skip.")
             arm_quiz(plan, idx, qs)
-    except Exception as e:  # don't advance on failure; scheduler retries next tick via last_sent
-        send(chat, f"⚠️ Couldn't prepare this session ({e}). I'll try again next time.")
+    except Exception as e:  # don't advance on failure
+        print("deliver failed:", plan["id"], e, flush=True)
+        if silent_retry and db.bump(f"retry:{plan['id']}:{datetime.now().date().isoformat()}", 2, 4 * 3600):
+            update_plan(plan["id"], last_sent=None)  # free today's slot: the next minute's tick tries again, quietly
+            return
+        send(chat, "⚠️ I couldn't prepare this session just now" + quota_note(e) + ". Send /next to try again, or I'll try "
+                   "again at your next scheduled time.")
         return
     update_plan(plan["id"], step=step + 1)
 
@@ -1652,7 +1686,7 @@ def cron_tick(start_by=25.0):
             return 0
         try:
             with db.lease(f"chat:{load()[pid]['chat_id']}", ttl=90, wait=20):
-                deliver_next(load()[pid])
+                deliver_next(load()[pid], silent_retry=True)
             return 1
         except Exception as e:
             print("cron: delivery failed", pid, e, flush=True)
