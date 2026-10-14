@@ -384,7 +384,10 @@ A.send_voice_clip = lambda chat, plan, text, caption="": sent.append(("clip", te
 TALK = dict(type="talk", q="A classmate greets you. Greet them back.", line="你好！", pron="nǐ hǎo", meaning="Hello", answer="你好 | nǐ hǎo | Hello")
 db.update_plan(lid, pending={"unit": 0, "qs": [TALK, dict(q="Q2?", answer="b")], "i": 0, "score": 0.0})
 A.send_question(db.PLANS[lid], db.PLANS[lid]["pending"])
-check("a conversation question plays what the other person says", ("clip", "你好！") in sent and any("Reply out loud" in str(t) for c_, t in sent))
+check("a conversation question does not play what the other person says (it would give the words away)",
+      ("clip", "你好！") not in sent and any("Reply out loud" in str(t) for c_, t in sent))
+webhook({"update_id": 969, "callback_query": {"id": "h1", "data": "q:hear:0", "message": {"message_id": 969, "chat": {"id": 88, "type": "private"}}}})
+check("but they can ask to hear it", ("clip", "你好！") in sent)
 _old_aj3 = A.ask_json
 A.ask_json = lambda system, user, max_tokens=0, temperature=None, audio=None: (
     {"transcript": "你好", "romanization": "nǐ hǎo"} if audio else {"rating": 4, "feedback": "Nice reply.", "natural": "你好 | nǐ hǎo | Hello"})

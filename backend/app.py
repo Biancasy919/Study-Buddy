@@ -732,7 +732,8 @@ def judge_reply(plan, q, said, rom="", voice=False):
         "appropriate and correct, 4 = appropriate with a small slip, 3 = understandable but with clear errors, 2 = partly "
         "off, 1 = barely related, 0 = nothing usable. feedback: under 60 words, plain text: say what worked, then give ONE "
         "correction as the learner's own sentence said correctly (a recast), then one short tip. natural: one natural way to "
-        "say it, as 'script | pronunciation | English'. Be warm; never harsh.",
+        "say it, as 'script | pronunciation | English'. Write only in the language being learned (its own script) and English: "
+        "never mix in a third language. Be warm; never harsh.",
         f"Language course: {plan['course']}\nSituation: {q['q']}\nThe other person says: {q['line']} ({q.get('pron', '')}; "
         f"{q.get('meaning', '')})\nA good reply: {q['answer']}\n\nLEARNER'S REPLY{' (transcribed from their voice)' if voice else ''}: "
         f"{said}{f' ({rom})' if rom else ''}", 500, 0.3)
@@ -873,6 +874,8 @@ def arm_quiz(plan, idx, qs):
 
 def ask_with_skip(chat, text, i, q=None):
     rows = [[{"text": "⏭ Skip this question", "callback_data": f"q:skip:{i}"}]]
+    if q and q.get("type") == "talk":  # hearing the other person is optional (it would give away the words)
+        rows.insert(0, [{"text": "🎧 Hear what they say", "callback_data": f"q:hear:{i}"}])
     if q and q.get("opts"):  # multiple choice / true-false: answer with a tap
         labels = list("ABCD")[:len(q["opts"])] if q.get("type") == "mcq" else q["opts"]
         rows.insert(0, [{"text": lab, "callback_data": f"q:pick:{i}:{k}"} for k, lab in enumerate(labels)])
@@ -922,8 +925,7 @@ def send_question(plan, pend):
         send_phrase_audio(plan["chat_id"], plan, dict(ph, meaning="Listen, then record yours"))
     elif q.get("type") == "talk":
         update_plan(plan["id"], speak_target=None)
-        ask_with_skip(plan["chat_id"], f"Question {i+1}/{n} 🗣\n\n{q['q']}\n\nReply out loud with a 🎤 voice message (or type your reply).", i)
-        send_voice_clip(plan["chat_id"], plan, q["line"], "🎧 They say this")
+        ask_with_skip(plan["chat_id"], f"Question {i+1}/{n} 🗣\n\n{q['q']}\n\nReply out loud with a 🎤 voice message, or type your reply.", i, q)
     else:
         update_plan(plan["id"], speak_target=None)
         if q.get("audio"):
@@ -1061,6 +1063,11 @@ def handle_callback(cq):
         if pend and str(pend["i"]) == data.split(":")[2]:  # ignore buttons from earlier questions
             do_skip(plan, pend)
         return
+    if plan and data.startswith("q:hear:"):
+        pend = plan.get("pending")
+        if pend and str(pend["i"]) == data.split(":")[2] and pend["qs"][pend["i"]].get("line"):
+            send_voice_clip(chat, plan, pend["qs"][pend["i"]]["line"], "🎧 They say this")
+        return
     if plan and data.startswith("q:pick:"):
         pend = plan.get("pending")
         _, _, i, k = data.split(":")
@@ -1083,8 +1090,7 @@ def handle_callback(cq):
                 update_plan(plan["id"], speak_target=ph)
                 send_phrase_audio(chat, plan, dict(ph, meaning="Listen, then record yours"))
             elif q.get("type") == "talk":
-                send(chat, "🔁 Have another go: reply out loud 🎤 (or type it). Practice only, your score stays.")
-                send_voice_clip(chat, plan, q["line"], "🎧 They say this")
+                ask_with_skip(chat, "🔁 Have another go: reply out loud 🎤 or type it (practice only, your score stays).\n\n" + q["q"], pend["i"], q)
             elif q.get("opts"):
                 ask_with_skip(chat, "🔁 Have another go (practice only, your score stays).\n\n" + question_body(q), pend["i"], q)
             else:
