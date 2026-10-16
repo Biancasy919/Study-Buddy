@@ -457,6 +457,24 @@ pb = A.practice_buttons(db.PLANS[pid])["inline_keyboard"]
 check("after practising a phrase there is still a way to the quiz", any(b["callback_data"].startswith("quiz:") for row in pb for b in row)
       and any(b["callback_data"] == "say:again" for row in pb for b in row))
 
+print("grading when the AI is unavailable")
+_b0 = A.grade_one
+def _busy(*a, **k): raise RuntimeError("AI service busy (429)")
+A.grade_one = _busy
+db.update_plan(pid, pending={"unit": 0, "qs": [dict(q="Explain X", answer="y" * 900), dict(q="Q2?", answer="b")], "i": 0, "score": 0.0})
+sent.clear()
+webhook(upd(990, 55, "my answer"))
+check("if the AI is only busy, the question stays so the learner can answer again", db.PLANS[pid]["pending"]["i"] == 0
+      and any("send your answer again" in t and "busy" in t for c_, t in sent) and not any("limit" in t for c_, t in sent))
+def _quota(*a, **k): raise RuntimeError("AI service error 403: 该令牌额度已用尽")
+A.grade_one = _quota
+sent.clear()
+webhook(upd(991, 55, "my answer"))
+check("if the allowance is really used up, it moves on with a SHORT model answer", db.PLANS[pid]["pending"]["i"] == 1
+      and any("limit" in t and len(t) < 600 for c_, t in sent))
+A.grade_one = _b0
+db.update_plan(pid, pending=None)
+
 print("two messages at once")
 order = []
 orig = A.handle_update

@@ -54,6 +54,11 @@ DEPTHS = {
     "standard": "Balanced: the key ideas with one concrete example.",
     "deep": "Go deep: explain the reasoning behind it, edge cases, common mistakes, and a worked example.",
 }
+QUIZ_LEVELS = {
+    "overview": "easier: recall and definitions, one step each.",
+    "standard": "balanced: some recall, some explain-why, and one application.",
+    "deep": "harder: multi-step application, edge cases and common mistakes, asked in the QUESTION (keep every model answer short).",
+}
 CTX_CHARS = 40_000  # material fed to the model per lesson/quiz
 
 
@@ -67,11 +72,37 @@ def save(plans):  # kept for old call sites; every write now goes straight to th
 
 
 def quota_hit(e):
-    return isinstance(e, BudgetExceeded) or "429" in str(e)
+    """The AI's allowance really is used up (the day's budget, or the provider's own limit on the key)."""
+    s = str(e).lower()
+    return isinstance(e, BudgetExceeded) or any(w in s for w in ("quota", "insufficient", "exceeded your", "billing", "额度"))
+
+
+def busy_hit(e):
+    s = str(e).lower()
+    return "429" in s or "busy" in s or "took too long" in s or "timed out" in s or isinstance(e, requests.Timeout)
 
 
 def quota_note(e):
-    return " (the AI limit for today looks reached)" if quota_hit(e) else ""
+    return (" (the AI limit for today looks reached)" if quota_hit(e)
+            else " (the AI is busy right now)" if busy_hit(e) else "")
+
+
+def short(s, n=350):
+    s = str(s or "").strip()
+    return s if len(s) <= n else s[:n].rsplit(" ", 1)[0] + "…"
+
+
+def grading_failed(plan, pend, q, e):
+    """The AI couldn't grade an answer. If it is only busy, keep the question so the learner can answer again; if the
+    allowance is used up, move on (with a short model answer)."""
+    chat = plan["chat_id"]
+    if quota_hit(e):
+        send(chat, f"⚠️ I couldn't check that one{quota_note(e)}, so we'll move on. A good answer: {short(q.get('answer'))}")
+        update_plan(plan["id"], speak_target=None)
+        move_on(plan, pend)
+    else:
+        send(chat, "⚠️ I couldn't check that just now" + quota_note(e) + ". Please send your answer again in a few seconds, "
+                   "or skip this question.")
 
 
 # ---------------------------------------------------------------- AI (any OpenAI-compatible API)
@@ -113,7 +144,7 @@ def ask(system: str, user: str, max_tokens=3000, temperature=None, audio=None, j
             if r.status_code in (429, 500, 502, 503, 504):
                 err = RuntimeError(f"AI service busy ({r.status_code})")
                 if attempt == 0:
-                    time.sleep(1.2)
+                    time.sleep(2.0)
                 continue
             if r.status_code == 400 and json_mode and "response_format" in body:
                 json_mode = False  # this model doesn't do strict JSON mode: ask the plain way
@@ -523,7 +554,8 @@ def make_quiz(plan, unit, round_no=0, review=True):
            if lang else type_rules(clean_qtypes(plan.get("qtypes"), plan["kind"])) + taught_rule)
         + (taught_rule if lang else "")
         + ("" if biws_quiz else ", progressing from recall to explain-why to application/scenario (repeat that pattern if there are more than 3)")
-        + ". \"answer\" is the model answer with the key points a correct answer must include. Difficulty: " + DEPTHS[plan["depth"]] + (
+        + ". \"answer\" is a SHORT model answer (at most 60 words; for a calculation, the worked numbers in 2-3 lines) with the key "
+        "points a correct answer must include. Difficulty: " + QUIZ_LEVELS[plan["depth"]] + (
             ' This is a language course with optional voice practice. The speaking task is allowed even if it is not in the question-type list, and its target must be one of the "Phrases taught" when the lesson taught any. Judge from the topic: ONLY if it teaches words, phrases, '
             'sounds or tones meant to be spoken, make the LAST question a SPEAKING task; otherwise make them all normal written '
             'questions and never set "speak". For a speaking task set "speak": true, '
@@ -809,9 +841,7 @@ def handle_voice(chat, v):
     except Exception as e:
         print("voice grading error:", e, flush=True)
         if in_quiz:
-            send(chat, f"⚠️ I couldn't check that one{quota_note(e)}, so we'll move on.")
-            update_plan(plan["id"], speak_target=None)
-            move_on(plan, pend)
+            grading_failed(plan, pend, q, e)
         else:
             send(chat, f"⚠️ I couldn't check that one{quota_note(e)}. Try again in a minute.")
         return
@@ -1820,8 +1850,7 @@ def handle_message(msg):
                 pts, fb = judge_reply(plan, q, text)
             except Exception as e:
                 print("grading error:", e)
-                send(chat, f"⚠️ I couldn't grade that one{quota_note(e)}, so we'll move on. A good reply: {q['answer']}")
-                move_on(plan, pend)
+                grading_failed(plan, pend, q, e)
                 return
             send(chat, fb)
             resolve(plan, pend, pts, text, fb, ok_at=0.8, reveal=q["answer"])
@@ -1839,9 +1868,7 @@ def handle_message(msg):
             pend["tries"] = tries + 1
         except Exception as e:
             print("grading error:", e)
-            send(chat, f"⚠️ I couldn't grade that one{quota_note(e)}, "
-                       f"so we'll move on. A good answer: {q['answer']}")
-            move_on(plan, pend)
+            grading_failed(plan, pend, q, e)
             return
         send(chat, ("✅ " if pts == 1 else "🟡 " if pts else "❌ ") + fb)
         resolve(plan, pend, pts, text, fb, reveal=reveal)
