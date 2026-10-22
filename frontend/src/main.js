@@ -44,15 +44,24 @@ $$(".next").forEach(b=>{if(b.id!=="create")b.onclick=()=>{
 
 // uploads
 const lists={exam:"#exam-list",practice:"#practice-list",outline:"#outline-list",slides:"#slides-list",cfiles:"#cfiles-list",lfiles:"#lfiles-list"};
+function renderFiles(key){
+  const arr=key==="outline"?(S.outline?[S.outline]:[]):(S[key]||[]);
+  $(lists[key]).innerHTML=arr.map((f,i)=>`<li><span>📄 ${f.name.replace(/[&<>]/g,"")}</span><button type="button" class="rm" data-key="${key}" data-i="${i}" title="Remove this file" aria-label="Remove ${f.name.replace(/[&<>"]/g,"")}">✕</button></li>`).join("");
+}
+// adds to what's already chosen (so files can be picked in several rounds); choosing a file with the same name replaces the old one
 function setFiles(key,files){
   files=[...files];
-  if(key==="outline"){S.outline=files[0]||null}else{S[key]=files}
-  $(lists[key]).innerHTML=files.map(f=>`<li>📄 ${f.name.replace(/[&<>]/g,"")}</li>`).join("");
+  if(!files.length)return;
+  if(key==="outline"){S.outline=files[0]}
+  else{const have=(S[key]||[]).filter(o=>!files.some(f=>f.name===o.name));S[key]=[...have,...files]}
+  renderFiles(key);
 }
+Object.keys(lists).forEach(k=>{$(lists[k]).onclick=e=>{const b=e.target.closest(".rm");if(!b)return;
+  if(k==="outline")S.outline=null;else S[k].splice(+b.dataset.i,1);renderFiles(k)}});
 $$(".drop").forEach(d=>{
   const key=d.dataset.input, input=$("#"+key);
   d.onclick=()=>input.click();
-  input.onchange=()=>setFiles(key,input.files);
+  input.onchange=()=>{setFiles(key,input.files);input.value=""};  // clear so the same file can be chosen again later
   d.ondragover=e=>{e.preventDefault();d.classList.add("over")};
   d.ondragleave=()=>d.classList.remove("over");
   d.ondrop=e=>{e.preventDefault();d.classList.remove("over");setFiles(key,e.dataTransfer.files)};

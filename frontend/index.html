@@ -92,7 +92,8 @@
     cursor:pointer;background:var(--field);transition:all .15s}
   .drop::before{content:"⬆";display:block;font-size:20px;color:var(--accent);margin-bottom:2px}
   .drop:hover,.drop.over{border-color:var(--accent);background:var(--soft);color:var(--ink)}
-  .files{margin:8px 0 0;padding:0;list-style:none;font-size:14px} .files li{padding:5px 10px;margin-top:5px;color:var(--ink);background:var(--soft);border-radius:10px;word-break:break-all}
+  .files{margin:8px 0 0;padding:0;list-style:none;font-size:14px} .files li{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 10px;margin-top:5px;color:var(--ink);background:var(--soft);border-radius:10px;word-break:break-all}
+  .files .rm{flex:none;border:0;background:transparent;color:var(--mute);font:inherit;font-size:15px;cursor:pointer;padding:2px 8px;border-radius:8px} .files .rm:hover{color:var(--ink);background:var(--line)}
 
   .chips{display:flex;flex-wrap:wrap;gap:8px}
   .chip{padding:9px 16px;border:2px solid var(--line);border-radius:999px;cursor:pointer;background:var(--card);color:var(--ink);font:inherit;font-size:14px;transition:all .15s}
