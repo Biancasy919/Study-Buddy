@@ -21,7 +21,10 @@ function show(n){
     if(b&&!S.biwsDefaults){S.biwsDefaults=true;S.size="topic";$$("[data-size]").forEach(x=>x.classList.toggle("sel",x.dataset.size==="topic"));S.days=new Set([0,1,2,3,4,5]);$$("#days .chip").forEach((c,i)=>c.classList.toggle("sel",S.days.has(i)));$("#time").value="17:00";$("#nq").value=3}
   }
   $$("#steps .st em")[1].textContent=S.kind==="biws"?"Modules":"Material";
-  if(n===2){renderQtypes();$("#dur-block").classList.toggle("hide",S.kind==="smu"||S.kind==="biws");durHint()}
+  if(n===2){renderQtypes();$("#dur-block").classList.toggle("hide",S.kind==="biws");
+    const smu=S.kind==="smu";$("#dur-course").classList.toggle("hide",!smu);
+    if(smu&&S.durKind!=="smu"){S.dur="course"}else if(!smu&&S.dur==="course"){S.dur="1m"}
+    S.durKind=S.kind;$$("[data-dur]").forEach(x=>x.classList.toggle("sel",x.dataset.dur===S.dur));durHint()}
   $$("section.card").forEach(c=>c.classList.toggle("hide",!(+c.dataset.step===n && (!c.dataset.for||c.dataset.for===S.kind))));
   $("#steps").classList.toggle("hide",n<0);$("#brand").classList.toggle("hide",n<0);
   $$("#steps .st").forEach((e,i)=>e.classList.toggle("on",i<=n));
@@ -84,9 +87,10 @@ function durHint(){
     const days=customDays(),sessions=Math.max(2,Math.round(days*S.days.size/7)),lessons=S.mode==="teach_test"?Math.max(2,Math.floor(sessions/2)):sessions;
     el.textContent=S.days.size?`${days} days on your days is about ${sessions} sessions: ${S.mode==="teach_test"?lessons+" lessons, each followed by a quiz":lessons+" quizzes"}. At the end you can add more time or keep going.`:"Pick at least one day.";
     return}
-  if(S.dur==="forever"){el.textContent="I'll keep writing new lessons as you go, building on what you've learned and what you find hard, until you pause it.";return}
+  if(S.dur==="course"){el.textContent="I'll teach and test every week of your outline once (a lesson, then a quiz), however many weeks it has. When you reach the end you can add revision or keep going with revision quizzes, weak topics first.";return}
+  if(S.dur==="forever"){el.textContent=S.kind==="smu"?"After your course is covered I'll keep quizzing you across all the weeks, weak topics first, until you pause it.":"I'll keep writing new lessons as you go, building on what you've learned and what you find hard, until you pause it.";return}
   const sessions=WEEKS[S.dur]*S.days.size, lessons=S.mode==="teach_test"?Math.max(2,Math.floor(sessions/2)):Math.max(2,sessions);
-  el.textContent=S.days.size?`That's about ${sessions} sessions on your days: ${S.mode==="teach_test"?lessons+" lessons, each followed by a quiz":lessons+" quizzes"}. At the end you can add another month or keep going with no end date.`:"Pick at least one day.";
+  el.textContent=S.days.size?`That's about ${sessions} sessions on your days: ${S.mode==="teach_test"?lessons+" lessons, each followed by a quiz":lessons+" quizzes"}. At the end you can add another month or keep going with no end date.${S.kind==="smu"?" If that is longer than your course, the extra time is revision quizzes, weak topics first.":""}`:"Pick at least one day.";
 }
 ["#dur-n","#dur-unit"].forEach(s=>$(s).oninput=()=>{$("#dur-date").value="";durHint()});
 $("#dur-date").oninput=durHint;
@@ -154,7 +158,7 @@ $("#create").onclick=async()=>{
   $("#err").textContent="";
   if(!S.days.size){$("#err").textContent="Pick at least one day.";return}
   const body={kind:S.kind,mode:S.mode,size:S.size,depth:S.depth,nq:Math.min(15,Math.max(2,parseInt($("#nq").value)||5)),qtypes:[...S.qtypes],days:[...S.days],time:$("#time").value,tz:$("#tz").value};
-  if(S.kind==="smu"){body.notes=$("#notes").value}
+  if(S.kind==="smu"){body.notes=$("#notes").value;body.duration=S.dur==="other"?"custom":S.dur;body.duration_days=customDays()}
   else if(S.kind==="biws"){Object.assign(body,{modules:[...S.biwsMods],optional:$("#biws-opt-days").checked,start:+$("#biws-start").value||1,notes:$("#biws-notes").value})}
   else if(S.kind==="language"){Object.assign(body,{language:$("#lang").value,level:S.level,focus:[...S.focus].join(", ")||"Everyday conversation",scope:$("#lnotes").value,duration:S.dur==="other"?"custom":S.dur,duration_days:customDays()})}
   else{Object.assign(body,{topic:$("#topic").value,scope:$("#scope").value,duration:S.dur==="other"?"custom":S.dur,duration_days:customDays()})}

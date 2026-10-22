@@ -38,6 +38,7 @@ A two-part product:
   they arrive instantly.
 - **Plan length:** 1 week, 2 weeks, 1 month, 3 months, a custom number of days or an end date, or **keep going with no end date**
   (new lessons are written as you go, building on what you covered and what you found hard). At the end you can add a month or keep going.
+  **University courses** default to *the whole course, once* (a lesson and a quiz per week of the outline), then revision quizzes, weak topics first, if you add time or keep going.
 - **Question types you choose:** multiple choice, true/false, open-ended, fill in the blank, and calculations when a topic is numeric.
   Multiple choice and true/false are answered with taps and graded instantly.
 - **Quizzes only test what the lesson taught** (the lesson text and phrases are remembered and given to the quiz writer).
@@ -98,7 +99,7 @@ cd backend && ../.venv/bin/python app.py    # website + bot at http://localhost:
 
 **Tests**
 ```bash
-.venv/bin/python tests/smoke.py        # 102 checks: API, webhook, scheduler, quizzes, voice, durations (AI stubbed, free)
+.venv/bin/python tests/smoke.py        # 111 checks: API, webhook, scheduler, quizzes, voice, durations (AI stubbed, free)
 .venv/bin/python tests/smoke.py pg     # the same against a real embedded Postgres (pip install pgserver)
 .venv/bin/python tests/redteam.py      # safety attacks against the REAL AI (costs a few cents)
 ```

@@ -475,6 +475,34 @@ check("if the allowance is really used up, it moves on with a SHORT model answer
 A.grade_one = _b0
 db.update_plan(pid, pending=None)
 
+print("university courses: one pass, then revision")
+SM = dict(PLAN, kind="smu", mode="teach_test")
+smid = c.post("/api/plans", json=dict(SM, duration="course", topic="", days=[0, 2, 4])).get_json()["id"]
+check("a whole-course plan has no fixed length until the outline is read", db.PLANS[smid]["duration"] == "course"
+      and db.PLANS[smid]["total_sessions"] is None)
+check("the whole-course choice is ignored for other kinds", db.PLANS[c.post("/api/plans", json=dict(PLAN, duration="course", topic="X")).get_json()["id"]]["duration"] is None)
+db.update_plan(smid, units=[dict(week=i, title=f"W{i}", summary="s", files=[]) for i in (1, 2, 3)], status="ready", chat_id=61)
+db.update_plan(smid, **A.course_length(db.PLANS[smid], db.PLANS[smid]["units"]))
+check("after the build the length is exactly one pass: a lesson and a quiz per week", db.PLANS[smid]["total_sessions"] == 6
+      and db.PLANS[smid]["target_lessons"] == 3)
+sp = db.PLANS[smid]
+check("the first pass alternates lesson and quiz", [A.step_info(sp, s)[:2] for s in range(6)] ==
+      [(0, False), (0, True), (1, False), (1, True), (2, False), (2, True)])
+check("after that, extra sessions are revision quizzes only, round by round",
+      [A.step_info(sp, s) for s in range(6, 10)] == [(0, True, 1), (1, True, 1), (2, True, 1), (0, True, 2)])
+db.update_plan(smid, step=8)
+check("the current topic follows revision rounds too (session 7 was topic 1)", A.current_idx(db.PLANS[smid]) == 1)
+db.update_plan(smid, step=6, finished=False, last_sent=None, paused=False)
+sent.clear()
+A.deliver_next(db.PLANS[smid])
+check("when the course has been covered, the learner is asked what next (revise or stop)", db.PLANS[smid]["finished"]
+      and any("revision" in str(b) or "weeks" in t for c_, t in sent for b in [t]))
+db.update_plan(smid, finished=True)
+webhook({"update_id": 995, "callback_query": {"id": "k1", "data": "ext:forever", "message": {"message_id": 995, "chat": {"id": 61, "type": "private"}}}})
+check("'keep going' on a course means revision forever", db.PLANS[smid]["total_sessions"] is None and not db.PLANS[smid]["finished"])
+cplan = dict(db.PLANS[pid], kind="custom", mode="teach_test")
+check("other kinds are unchanged (they cycle as before)", A.step_info(cplan, 4)[:3] == ((2 % len(cplan["units"])), False, 4 // (2 * len(cplan["units"]))))
+
 print("two messages at once")
 order = []
 orig = A.handle_update

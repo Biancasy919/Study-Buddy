@@ -1257,7 +1257,8 @@ def start_extra(plan, idx, n=None):
 
 
 def current_idx(plan):
-    return max(0, (plan["step"] - 1) // (2 if plan["mode"] == "teach_test" else 1)) % len(plan["units"])
+    """The topic of the session that was sent last."""
+    return step_info(plan, plan["step"] - 1)[0] if plan["step"] > 0 else 0
 
 
 def send_html(chat, text):
@@ -1417,8 +1418,13 @@ def touch(pid):
 
 
 def step_info(plan, step):
+    """(unit index, is it a quiz, round number) for session number `step`.
+    A university course is taught once (a lesson then a quiz per week); after that, extra sessions are revision quizzes only."""
     n = len(plan["units"])
     if plan["mode"] == "teach_test":
+        if plan["kind"] == "smu" and step >= 2 * n:
+            j = step - 2 * n
+            return j % n, True, 1 + j // n
         return (step // 2) % n, step % 2 == 1, step // (2 * n)
     return step % n, True, step // n
 
@@ -1484,7 +1490,7 @@ def deliver_next(plan, silent_retry=False):
     if not units:
         return
     step = plan["step"]
-    if plan.get("total_sessions") and step >= plan["total_sessions"] and plan["kind"] in ("custom", "language"):
+    if plan.get("total_sessions") and step >= plan["total_sessions"] and plan["kind"] in ("custom", "language", "smu"):
         if not plan.get("finished"):
             finish_plan(plan)
         return
@@ -1495,11 +1501,7 @@ def deliver_next(plan, silent_retry=False):
         send(plan["chat_id"], "🎉 You've finished every lesson and quiz in your plan! /plan to look back, /goto 1 to start "
                               "again, or /review to revisit your weakest topic.")
         return
-    if plan["mode"] == "teach_test":
-        idx, is_quiz = (step // 2) % n, step % 2 == 1
-        round_no = step // (2 * n)
-    else:
-        idx, is_quiz, round_no = step % n, True, step // n
+    idx, is_quiz, round_no = step_info(plan, step)
     unit = units[idx]
     chat = plan["chat_id"]
     touch(plan["id"])  # replies to this message belong to this plan
@@ -1654,7 +1656,7 @@ def plan_overview(plan):
             done = sum(1 for i in idxs if i < reached)
             lines.append(f"{'✅' if done == len(idxs) else '▶️' if done else '⬜'} {name}: {done}/{len(idxs)}")
         return "\n".join(lines)
-    cur = max(0, (step - 1) // (2 if plan["mode"] == "teach_test" else 1)) % len(units)
+    cur = current_idx(plan)
     return f"🗺 {plan['course']}\n" + "\n".join(f"{'▶️' if i == cur else '  '} {i + 1}. {u['title']}" for i, u in enumerate(units[:40]))
 
 
@@ -1883,7 +1885,7 @@ def handle_message(msg):
         send(chat, ("✅ " if pts == 1 else "🟡 " if pts else "❌ ") + fb)
         resolve(plan, pend, pts, text, fb, reveal=reveal)
     else:
-        unit = plan["units"][max(0, plan["step"] - 1) // (2 if plan["mode"] == "teach_test" else 1) % len(plan["units"])]
+        unit = plan["units"][current_idx(plan)]
         send(chat, tutor_reply(plan, unit, text))
 
 
@@ -1941,8 +1943,9 @@ def process_update(u):
 DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-DURATIONS = {"1w": 1, "2w": 2, "1m": 4, "3m": 13, "forever": 0}  # weeks (forever: no end)
-DUR_TEXT = {"1w": "for 1 week", "2w": "for 2 weeks", "1m": "for 1 month", "3m": "for 3 months", "forever": "with no end date (until you pause it)"}
+DURATIONS = {"1w": 1, "2w": 2, "1m": 4, "3m": 13, "forever": 0, "course": 0}  # weeks (forever: no end; course: the whole course, once)
+DUR_TEXT = {"1w": "for 1 week", "2w": "for 2 weeks", "1m": "for 1 month", "3m": "for 3 months", "forever": "with no end date (until you pause it)",
+            "course": "for the whole course, then revision if you want"}
 FIRST_BATCH = 12  # lessons written up front; the rest are written as the learner gets near them
 
 
@@ -1999,9 +2002,11 @@ def finish_plan(plan):
     hist = plan.get("history") or []
     avg = f" Your average quiz score was {sum(h['score'] for h in hist) / max(1, sum(h['n'] for h in hist)):.0%}." if hist and sum(h["n"] for h in hist) else ""
     update_plan(plan["id"], finished=True)
+    more = ("I'll keep quizzing you across all the weeks, weak topics first." if plan["kind"] == "smu"
+            else "I'll carry on from where you are and keep making new lessons.")
     send(plan["chat_id"], f"🎉 You've finished your plan: {plan['course']}! That's {plan['step']} sessions.{avg}\n\n"
-                          "Want to keep going? I'll carry on from where you are and keep making new lessons.",
-         {"inline_keyboard": [[{"text": "➕ 1 more month", "callback_data": "ext:1m"}],
+                          f"Want to keep going? {more}",
+         {"inline_keyboard": [[{"text": "➕ 1 more month" + (" of revision" if plan["kind"] == "smu" else ""), "callback_data": "ext:1m"}],
                               [{"text": "♾ Keep going, no end date", "callback_data": "ext:forever"}],
                               [{"text": "🏁 That's enough for now", "callback_data": "ext:stop"}]]})
 
@@ -2269,6 +2274,8 @@ def create_plan():
     except (ValueError, TypeError):
         lessons = None
     dur = f.get("duration") if f.get("duration") in DURATIONS or f.get("duration") == "custom" else None
+    if dur == "course" and kind != "smu":
+        dur = None
     target = total = None
     dur_days = None
     if dur == "custom":
@@ -2278,7 +2285,7 @@ def create_plan():
             return jsonify(error="Tell me how long you want to keep going."), 400
     if dur == "forever":
         lessons = 10  # then the next ones are written as the learner goes
-    elif dur:
+    elif dur and dur != "course":  # ("course": the length is set when the outline has been read)
         sessions = max(2, round(dur_days * len(days) / 7)) if dur == "custom" else DURATIONS[dur] * len(days)
         target = max(2, sessions // 2) if mode == "teach_test" else max(2, sessions)
         total = target * (2 if mode == "teach_test" else 1)
@@ -2322,6 +2329,12 @@ def add_material(pid):
     return jsonify(ok=True)
 
 
+def course_length(plan, units):
+    """A 'whole course' plan lasts exactly one pass: a lesson and a quiz per topic (or just a quiz per topic)."""
+    n = len(units)
+    return dict(target_lessons=n, total_sessions=2 * n if plan["mode"] == "teach_test" else n)
+
+
 def build_plan(pid):
     """Step 3: turn the course material (or the topic) into a syllabus."""
     plan = load()[pid]
@@ -2333,7 +2346,8 @@ def build_plan(pid):
     course, units, language = build_syllabus(plan, {"outline": outline, "files": mats})
     update_plan(pid, course=course, units=units, status="ready", error=None, outline=outline_name, language=language,
                 banks={k: db.material_names(pid, k) for k in ("exam", "practice") if db.material_names(pid, k)},
-                voice=bool(language))  # audio examples only for real language courses
+                voice=bool(language),  # audio examples only for real language courses
+                **(course_length(plan, units) if plan.get("duration") == "course" else {}))
 
 
 @app.post("/api/plans/<pid>/build")
@@ -2386,7 +2400,7 @@ def edit_units(pid):
             except (KeyError, ValueError, TypeError, IndexError):
                 return jsonify(error="Every topic in this plan comes from the guide, so new topics can't be added."), 400
         units.append(unit)
-    update_plan(pid, units=units, pending=None)
+    update_plan(pid, units=units, pending=None, **(course_length(p, units) if p.get("duration") == "course" else {}))
     clear_prefetch(pid)  # indexes may have shifted, so drop any open quiz
     return jsonify(ok=True)
 
