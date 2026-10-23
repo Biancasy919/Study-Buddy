@@ -71,6 +71,54 @@ def save(plans):  # kept for old call sites; every write now goes straight to th
     pass
 
 
+OWNER_USERNAME = os.getenv("OWNER_USERNAME", "").strip().lstrip("@").lower()  # the developer's Telegram username (alerts go to them)
+OWNER_CHAT_ID = os.getenv("OWNER_CHAT_ID", "").strip()
+
+
+def owner_chat():
+    """Where alerts go: OWNER_CHAT_ID, or the chat the owner opened with the bot (found by their username)."""
+    if OWNER_CHAT_ID.lstrip("-").isdigit():
+        return int(OWNER_CHAT_ID)
+    hit = db.cache_get("owner_chat")
+    return hit["id"] if hit else None
+
+
+def learn_owner(frm, chat):
+    """The first time the owner messages the bot, remember their chat so alerts can reach them."""
+    if OWNER_USERNAME and frm and (frm.get("username") or "").lower() == OWNER_USERNAME and not OWNER_CHAT_ID:
+        known = db.cache_get("owner_chat")
+        if not known or known.get("id") != chat:
+            db.cache_put("owner_chat", {"id": chat})
+            send(chat, "✅ Hi developer! I'll send error reports and learner feedback to this chat.")
+
+
+def notify_owner(kind, detail, plan=None, chat=None, key=None, forward=None):
+    """Tell the developer something needs a look. Never raises, and is rate-limited so a loop can't flood their chat.
+    forward=(from_chat, message_id) also forwards the exact message the learner was looking at."""
+    try:
+        to = owner_chat()
+        if not to:
+            print(f"ALERT (no owner chat yet) {kind}: {str(detail)[:200]}", flush=True)
+            return False
+        hour = datetime.now().strftime("%Y%m%d%H")
+        if not db.bump(f"alert:{key or kind}:{hour}", 3, 3600) or not db.bump(f"alert:all:{hour}", 25, 3600):
+            return False  # the same problem is already reported this hour
+        who = []
+        if chat:
+            who.append(f"chat {chat}")
+        if plan:
+            who.append(f"plan '{plan.get('course') or plan.get('topic')}' ({str(plan.get('id'))[:6]}, step {plan.get('step')})")
+        text = (f"🚨 TOMO · {kind}\n{str(detail).strip()[:3000]}"
+                + (f"\n\nWho: {' · '.join(who)}" if who else "") + f"\nWhen: {datetime.now().strftime('%d %b %H:%M:%S')} (server time)")
+        tg("sendMessage", chat_id=to, text=text[:3900])
+        if forward:
+            tg("forwardMessage", chat_id=to, from_chat_id=forward[0], message_id=forward[1])
+        return True
+    except Exception as e:
+        print("couldn't alert the owner:", e, flush=True)
+        return False
+
+
 def quota_hit(e):
     """The AI's allowance really is used up (the day's budget, or the provider's own limit on the key)."""
     s = str(e).lower()
@@ -96,6 +144,8 @@ def grading_failed(plan, pend, q, e):
     """The AI couldn't grade an answer. If it is only busy, keep the question so the learner can answer again; if the
     allowance is used up, move on (with a short model answer)."""
     chat = plan["chat_id"]
+    notify_owner("AI limit reached while grading" if quota_hit(e) else "grading failed (AI busy or unreachable)",
+                 f"{repr(e)[:300]}\nQuestion: {short(q.get('q'), 200)}", plan, chat, key="grading:" + ("quota" if quota_hit(e) else "busy"))
     if quota_hit(e):
         send(chat, f"⚠️ I couldn't check that one{quota_note(e)}, so we'll move on. A good answer: {short(q.get('answer'))}")
         update_plan(plan["id"], speak_target=None)
@@ -706,6 +756,7 @@ def send_voice_clip(chat, plan, text, caption="🎧 Listen"):
                       files={"audio": ("clip.mp3", data, "audio/mpeg")}, timeout=60)
     except Exception as e:
         print("tts error:", e, flush=True)
+        notify_owner("audio could not be made", repr(e)[:300], None, chat, key="tts")
         send(chat, "🔇 I couldn't make the audio just now. Please tap again in a moment.")
 
 
@@ -720,6 +771,7 @@ def send_phrase_audio(chat, plan, ph):
                       files={"audio": ("phrase.mp3", data, "audio/mpeg")}, timeout=60)
     except Exception as e:
         print("tts error:", e, flush=True)
+        notify_owner("audio could not be made", repr(e)[:300], None, chat, key="tts")
         send(chat, "🔇 I couldn't make the audio just now. Please tap again in a moment.")
 
 
@@ -847,6 +899,7 @@ def handle_voice(chat, v):
             fb = grade_audio(plan, target, audio, mime)
     except Exception as e:
         print("voice grading error:", e, flush=True)
+        notify_owner("a voice note could not be checked", repr(e)[:400], plan, chat, key="voice")
         if in_quiz:
             grading_failed(plan, pend, q, e)
         else:
@@ -1002,6 +1055,7 @@ def feedback_buttons(chat, unit_idx=0):
 def merge_feedback(plan, text):
     """Fold new feedback into the plan's standing preferences. Returns a confirmation message."""
     prefs = plan.get("prefs") or []
+    notify_owner("learner feedback", text[:800], plan, plan.get("chat_id"), key="feedback:" + str(plan.get("id")))
     try:
         d = ask_json("Merge the learner's new feedback into a short list of standing preferences for their tutor bot "
                      "(max 8 items, each one short imperative sentence, e.g. 'Make questions harder'). Resolve "
@@ -1542,6 +1596,7 @@ def deliver_next(plan, silent_retry=False):
             return
         send(chat, "⚠️ I couldn't prepare this session just now" + quota_note(e) + ". Send /next to try again, or I'll try "
                    "again at your next scheduled time.")
+        notify_owner("a session could not be prepared", repr(e)[:400], plan, chat, key="deliver")
         return
     update_plan(plan["id"], step=step + 1)
 
@@ -1561,14 +1616,16 @@ BIWS_HELP = (
     "Busy? Change the schedule\n/resched - skip the next lesson (everything shifts)\n/resched undo - take back the skip\n"
     "/pause and /resume\n/time 7:30am - change the delivery time\n/days mon-sat - change the days\n"
     "/timezone Asia/Manila - set your timezone\n"
-    "/settings - lesson size (word for word, condensed, bite-size), depth, questions per quiz\n/feedback - tell me how to adjust"
+    "/settings - lesson size (word for word, condensed, bite-size), depth, questions per quiz\n/feedback - tell me how to adjust\n"
+    "/report - something not working? reply to the message that went wrong"
 )
 
 GENERIC_HELP = (
     "📌 COMMANDS\n\n/next - the next session now\n/quiz - test me on the current topic\n/more - extra questions on this topic\n"
     "/skip - skip a question (or tap Skip)\n/done - stop the quiz\n/review - quiz me on my weakest topic\n"
     "/progress - your scores\n/plan - the roadmap\n/schedule - upcoming sessions\n/settings - lesson size, depth, questions\n"
-    "/feedback - tell me how to adjust\n/plans and /switch 2 - if you're learning several things\n"
+    "/feedback - tell me how to adjust\n/report - something not working? reply to the message that went wrong\n"
+    "/plans and /switch 2 - if you're learning several things\n"
     "/pause and /resume\n/resched - skip the next session\n/time 7:30am - change the time\n/days mon-sat - change the days\n"
     "/timezone Asia/Manila - set your timezone"
 )
@@ -1660,6 +1717,21 @@ def plan_overview(plan):
     return f"🗺 {plan['course']}\n" + "\n".join(f"{'▶️' if i == cur else '  '} {i + 1}. {u['title']}" for i, u in enumerate(units[:40]))
 
 
+def report_problem(chat, msg, text):
+    """/report: the learner tells the developer something is wrong. Replying to the message that went wrong forwards it too."""
+    plan = plan_for_chat(chat)
+    body = text[len("/report"):].strip()
+    rm = msg.get("reply_to_message")
+    if not body and not rm:
+        send(chat, "Something not working? Reply to the message that went wrong with /report and a few words about what happened. "
+                   "I'll pass it on to the developer.")
+        return
+    db.cache_put(f"report:{int(time.time())}:{chat}", {"chat": chat, "text": body[:800], "msg": rm.get("message_id") if rm else None})
+    notify_owner("report from a learner", body[:1500] or "(no text, see the forwarded message)", plan, chat, key=f"report:{chat}",
+                 forward=(chat, rm["message_id"]) if rm else None)
+    send(chat, "Thank you! I've sent this to the developer so it can be fixed. 🙏")
+
+
 def handle_message(msg):
     chat = msg["chat"]["id"]
     if msg.get("voice") or msg.get("audio"):
@@ -1691,6 +1763,9 @@ def handle_message(msg):
                        "Everything: /help")
         else:
             send(chat, "Hi, I'm TOMO! Create your study plan on the website first, then tap the 'Open Telegram' button it gives you.")
+        return
+    if text.split()[0].lower() == "/report":
+        report_problem(chat, msg, text)
         return
     plan = plan_for_chat(chat)
     if not plan:
@@ -1902,6 +1977,11 @@ def handle_update(u):
             handle_message(obj)
     except Exception as e:
         print("handler error:", e, flush=True)
+        import traceback
+        what = (obj.get("data") if "callback_query" in u else (obj.get("text") or "(voice or other)"))
+        notify_owner("daily AI budget reached" if isinstance(e, BudgetExceeded) else "error while handling a message",
+                     f"{e.__class__.__name__}: {str(e)[:300]}\nThe learner sent: {str(what)[:300]}\n"
+                     f"{traceback.format_exc()[-700:]}", plan_for_chat(chat), chat, key="budget" if isinstance(e, BudgetExceeded) else "handler:" + e.__class__.__name__)
         try:
             send(chat, e.user_message if isinstance(e, BudgetExceeded) else
                  "⚠️ Something went wrong on my side" + quota_note(e) + ". Please try again.")
@@ -1921,6 +2001,10 @@ def process_update(u):
     if msg.get("chat", {}).get("type") not in (None, "private"):
         return  # one-to-one chats only
     chat = msg["chat"]["id"]
+    try:
+        learn_owner(obj.get("from"), chat)
+    except Exception as e:
+        print("owner check failed:", e, flush=True)
     if "callback_query" in u:
         cq = u["callback_query"]
         data = cq.get("data", "")
@@ -2366,6 +2450,9 @@ def build(pid):
         msg = e.user_message if isinstance(e, BudgetExceeded) else str(e)
         print("build failed:", pid, e, flush=True)
         update_plan(pid, status="error", error=msg)
+        if not isinstance(e, ValueError):  # (a plain "please upload your files" message isn't an incident)
+            notify_owner("a study plan failed to build", f"{repr(e)[:400]}\nTopic: {p.get('topic') or p.get('course')} ({p['kind']})",
+                         p, None, key="build")
     return jsonify(status=load()[pid]["status"], error=load()[pid].get("error"))
 
 

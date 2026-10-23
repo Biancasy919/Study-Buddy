@@ -125,6 +125,7 @@ tests/      smoke tests and the red-team script    docs/      the language-teach
 | **Garbled AI output** (broken JSON) | Strict JSON mode, automatic repair, one re-ask, then a plain-language message | Unit tests, plus a real incident that was fixed |
 | **Provider busy, slow or out of allowance** | Short timeouts, a second model, quiet retries. The bot says honestly whether the AI is *busy* or the *limit is reached*, and keeps the question if it is only busy | Unit tests for both cases |
 | **Cost abuse** (anyone can open the site) | Daily spend cap (`DAILY_BUDGET_USD`), 20 plans per visitor per day, request size limits | Unit tests |
+| **Failures nobody notices** (errors, a missed session, the AI allowance running out, a learner stuck) | **Developer alerts on Telegram:** server errors, sessions that could not be prepared, grading failures, AI limit reached, plan-build failures, learner feedback, and a `/report` command that **forwards the exact message** the learner was looking at. Each problem is reported at most 3 times an hour so a loop can't flood the chat | Unit tests: owner link, error alert, feedback alert, `/report` forwarding, and the flood limit |
 | **Someone taking over another person's plan** | A plan code links to the *first* Telegram chat only; later attempts are refused | Unit tests |
 | **Unauthorised calls** | Telegram webhook secret, `CRON_SECRET` on the scheduler and setup endpoints, CORS limited to the site | Unit tests |
 | **Copyrighted material** | Nothing copyrighted is in the repository; the optional private guide mode needs the user's own copy and an access code | n/a |
@@ -136,7 +137,8 @@ tests/      smoke tests and the red-team script    docs/      the language-teach
 - **No accounts or login.** Anyone with the website address can create plans (this uses the AI allowance, hence the limits above). A plan's
   secret is its random link, and only the first chat to use it can claim it.
 - **Privacy:** uploaded course text is stored in the database so lessons can be written from it, and your messages and voice notes
-  are sent to the AI provider. Do not upload anything you would not want a third-party AI service to see. Deleting a plan deletes its text.
+  are sent to the AI provider. When something fails, or a learner sends feedback or `/report`, the developer gets a Telegram alert that
+  includes the relevant message text and chat ID. Do not upload anything you would not want a third-party AI service to see. Deleting a plan deletes its text.
 - **The teaching design rests on research that is mixed and often small-scale**; it is a sensible design, not a guaranteed result.
 - **The free AI gateway key has a small spending limit** and is shared infrastructure, so the bot can slow down or pause.
 - **Voice output** uses a simple free text-to-speech service, so voices are less polished than premium ones.

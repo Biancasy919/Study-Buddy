@@ -503,6 +503,57 @@ check("'keep going' on a course means revision forever", db.PLANS[smid]["total_s
 cplan = dict(db.PLANS[pid], kind="custom", mode="teach_test")
 check("other kinds are unchanged (they cycle as before)", A.step_info(cplan, 4)[:3] == ((2 % len(cplan["units"])), False, 4 // (2 * len(cplan["units"]))))
 
+print("alerts to the developer")
+A.OWNER_USERNAME = "devperson"
+A.OWNER_CHAT_ID = ""
+fwd = []
+_tg_before = A.tg
+def tg_track(method, **k):
+    if method == "forwardMessage":
+        fwd.append((k["chat_id"], k["from_chat_id"], k["message_id"]))
+        return {"ok": True}
+    return fake_tg(method, **k)
+A.tg = tg_track
+sent.clear()
+check("no owner chat yet: an alert is just logged, nothing breaks", A.notify_owner("test", "x") is False)
+webhook({"update_id": 1001, "message": {"message_id": 1, "chat": {"id": 777, "type": "private"}, "from": {"id": 777, "username": "DevPerson"}, "text": "hi"}})
+check("when the developer messages the bot once, their chat is remembered", A.owner_chat() == 777 and any(c_ == 777 and "error reports" in t for c_, t in sent))
+sent.clear()
+real_hm = A.handle_message
+def boom(msg): raise RuntimeError("kaboom in the handler")
+A.handle_message = boom
+webhook(upd(1002, 55, "hello there"))
+A.handle_message = real_hm
+check("an error while handling a learner's message alerts the developer, with what the learner sent",
+      any(c_ == 777 and "kaboom" in t and "hello there" in t and "chat 55" in t for c_, t in sent)
+      and any(c_ == 55 and "went wrong" in t for c_, t in sent))
+sent.clear()
+for n in range(6):
+    A.handle_message = boom
+    webhook(upd(1010 + n, 55, "again"))
+A.handle_message = real_hm
+check("the same problem is not repeated more than 3 times an hour (no flooding)", sum(1 for c_, t in sent if c_ == 777 and "kaboom" in t) <= 3)
+sent.clear()
+db.update_plan(pid, awaiting_feedback=True, pending=None)
+_old_aj4 = A.ask_json
+A.ask_json = lambda *a, **k: {"prefs": ["harder"], "reply": "ok"}
+webhook(upd(1030, 55, "the questions repeat too much"))
+A.ask_json = _old_aj4
+check("learner feedback is forwarded to the developer", any(c_ == 777 and "learner feedback" in t and "repeat too much" in t for c_, t in sent))
+sent.clear(); fwd.clear()
+webhook({"update_id": 1031, "message": {"message_id": 50, "chat": {"id": 55, "type": "private"}, "text": "/report the audio never plays",
+                                         "reply_to_message": {"message_id": 49, "chat": {"id": 55}, "text": "Listen"}}})
+check("/report sends the developer the note and forwards the exact message the learner meant",
+      any(c_ == 777 and "report from a learner" in t and "audio never plays" in t for c_, t in sent) and fwd == [(777, 55, 49)]
+      and any(c_ == 55 and "Thank you" in t for c_, t in sent))
+sent.clear()
+webhook(upd(1032, 55, "/report"))
+check("/report on its own explains how to use it", any(c_ == 55 and "Reply to the message" in t for c_, t in sent))
+A.tg = _tg_before
+A.OWNER_USERNAME = ""
+db.x("DELETE FROM cache WHERE key=%s", ("owner_chat",))  # leave no developer chat behind for the later tests
+db.x("DELETE FROM counters WHERE key LIKE %s", ("alert:%",))
+
 print("two messages at once")
 order = []
 orig = A.handle_update

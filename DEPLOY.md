@@ -56,6 +56,7 @@ Vercel → **Add New Project** → pick your repo → name it `study-buddy-backe
 | `LLM_API_KEY` | from the AI Lodge API Key bot |
 | `CRON_SECRET` | any long random text you make up (you'll use it twice below) |
 | `FRONTEND_URL` | add this in Step 4 |
+| `OWNER_USERNAME` | optional. Your Telegram username without the @. Message the bot once, and it sends you error reports, learner feedback and `/report` messages |
 | `DAILY_BUDGET_USD` | optional. `5` by default; once the day's estimated AI cost reaches it, the bot pauses AI for the day |
 
 When it finishes you get an address like `https://study-buddy-backend.vercel.app`. Open `…/api/health`. You should see
