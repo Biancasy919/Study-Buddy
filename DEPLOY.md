@@ -56,6 +56,7 @@ Vercel → **Add New Project** → pick your repo → name it `study-buddy-backe
 | `LLM_API_KEY` | from the AI Lodge API Key bot |
 | `CRON_SECRET` | any long random text you make up (you'll use it twice below) |
 | `FRONTEND_URL` | add this in Step 4 |
+| `LLM2_API_KEY` | optional but recommended. A **backup AI provider** (Google's Gemini API by default; free key at https://aistudio.google.com/apikey). If the main AI gateway is down, the bot switches to it by itself. Text only; voice checking needs the main gateway |
 | `OWNER_USERNAME` | optional. Your Telegram username without the @. Message the bot once, and it sends you error reports, learner feedback and `/report` messages |
 | `DAILY_BUDGET_USD` | optional. `5` by default; once the day's estimated AI cost reaches it, the bot pauses AI for the day |
 

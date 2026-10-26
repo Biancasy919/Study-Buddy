@@ -99,7 +99,7 @@ cd backend && ../.venv/bin/python app.py    # website + bot at http://localhost:
 
 **Tests**
 ```bash
-.venv/bin/python tests/smoke.py        # 111 checks: API, webhook, scheduler, quizzes, voice, durations (AI stubbed, free)
+.venv/bin/python tests/smoke.py        # 123 checks: API, webhook, scheduler, quizzes, voice, durations (AI stubbed, free)
 .venv/bin/python tests/smoke.py pg     # the same against a real embedded Postgres (pip install pgserver)
 .venv/bin/python tests/redteam.py      # safety attacks against the REAL AI (costs a few cents)
 ```
@@ -123,7 +123,7 @@ tests/      smoke tests and the red-team script    docs/      the language-teach
 | **Spoken-answer hallucination:** an AI told the target phrase tends to "hear" it | Two steps: transcribe *blind*, then compare. The learner sees what was heard | Tested with real audio: right phrase 5/5, a different phrase 1/5 with "I heard X, not Y", one swapped word 3/5 |
 | **Handing out answers** | Grader coaches the method and keeps the answer back until the learner gives up | Red-team: a wrong answer got coaching without the model answer |
 | **Garbled AI output** (broken JSON) | Strict JSON mode, automatic repair, one re-ask, then a plain-language message | Unit tests, plus a real incident that was fixed |
-| **Provider busy, slow or out of allowance** | Short timeouts, a second model, quiet retries. The bot says honestly whether the AI is *busy* or the *limit is reached*, and keeps the question if it is only busy | Unit tests for both cases |
+| **Provider busy, slow, down or out of allowance** | Short timeouts, a second model, quiet retries, and an **automatic backup AI provider** (a separate service) that takes over when the main gateway is down, with a developer alert when it does. The bot says honestly whether the AI is *busy* or the *limit is reached*, and keeps the question if it is only busy | Unit tests for both cases |
 | **Cost abuse** (anyone can open the site) | Daily spend cap (`DAILY_BUDGET_USD`), 20 plans per visitor per day, request size limits | Unit tests |
 | **Failures nobody notices** (errors, a missed session, the AI allowance running out, a learner stuck) | **Developer alerts on Telegram:** server errors, sessions that could not be prepared, grading failures, AI limit reached, plan-build failures, learner feedback, and a `/report` command that **forwards the exact message** the learner was looking at. Each problem is reported at most 3 times an hour so a loop can't flood the chat | Unit tests: owner link, error alert, feedback alert, `/report` forwarding, and the flood limit |
 | **Someone taking over another person's plan** | A plan code links to the *first* Telegram chat only; later attempts are refused | Unit tests |
@@ -140,6 +140,6 @@ tests/      smoke tests and the red-team script    docs/      the language-teach
   are sent to the AI provider. When something fails, or a learner sends feedback or `/report`, the developer gets a Telegram alert that
   includes the relevant message text and chat ID. Do not upload anything you would not want a third-party AI service to see. Deleting a plan deletes its text.
 - **The teaching design rests on research that is mixed and often small-scale**; it is a sensible design, not a guaranteed result.
-- **The free AI gateway key has a small spending limit** and is shared infrastructure, so the bot can slow down or pause.
+- **The free AI gateway key has a small spending limit** and is shared infrastructure, so the bot can slow down or pause. A backup provider keeps text lessons and quizzes working if the gateway is down; voice checking needs the main gateway.
 - **Voice output** uses a simple free text-to-speech service, so voices are less polished than premium ones.
 - **Telegram only** (no WhatsApp, no mobile app), and the interface is in English.

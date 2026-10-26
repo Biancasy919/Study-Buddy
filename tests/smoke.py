@@ -682,6 +682,44 @@ try:
 except RuntimeError as e:
     bad = "401" in str(e)
 check("a rejected key is reported clearly", bad)
+print("a backup AI provider")
+_posts = []
+_bk = (A.LLM2_API_KEY, A.LLM2_BASE_URL, A.LLM2_MODEL)
+A.LLM2_API_KEY, A.LLM2_BASE_URL, A.LLM2_MODEL = "bk-key", "https://backup.example/v1", "bm"
+ok2 = {"choices": [{"message": {"content": " from the backup "}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+def post_down(url, **k):
+    _posts.append((url.split("/chat")[0], k["json"]["model"], k["headers"]["Authorization"][-6:]))
+    return R(200, ok2) if "backup.example" in url else R(502, {})
+A._http.post = post_down
+db.x("DELETE FROM cache WHERE key=%s", ("llm1_bad",))
+check("when the main gateway is down (502) the backup provider answers", A.ask("s", "u") == "from the backup"
+      and _posts[-1] == ("https://backup.example/v1", "bm", "-key"[-6:]) or _posts[-1][0] == "https://backup.example/v1")
+_posts.clear()
+check("and for the next minute it goes straight to the backup, without waiting on the dead gateway",
+      A.ask("s", "u") == "from the backup" and [p[0] for p in _posts] == ["https://backup.example/v1"])
+db.x("DELETE FROM cache WHERE key=%s", ("llm1_bad",))
+_posts.clear()
+def post_main_ok(url, **k):
+    _posts.append(url.split("/chat")[0])
+    return R(200, ok_body)
+A._http.post = post_main_ok
+check("when the main gateway works, the backup is not used", A.ask("s", "u") == "hello" and all("backup" not in p for p in _posts))
+def post_401(url, **k):
+    return R(401, {}) if "backup.example" not in url else R(200, ok2)
+A._http.post = post_401
+check("if the main key is refused, the backup is tried instead of giving up", A.ask("s", "u") == "from the backup")
+A.LLM2_API_KEY = ""
+A._http.post = post_down
+db.x("DELETE FROM cache WHERE key=%s", ("llm1_bad",))
+try:
+    A.ask("s", "u"); nobk = False
+except RuntimeError as e:
+    nobk = "busy" in str(e)
+check("with no backup set, a down gateway is reported as before", nobk)
+A.LLM2_API_KEY, A.LLM2_BASE_URL, A.LLM2_MODEL = _bk
+A._http.post = fake_post
+db.x("DELETE FROM cache WHERE key=%s", ("llm1_bad",))
+
 db.budget_record(4_000_000, 1_000_000)  # about $3.7 at the default prices, over the $1 cap
 try:
     A.ask("s", "u"); capped = False

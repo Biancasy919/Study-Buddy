@@ -38,7 +38,12 @@ PORT = int(os.getenv("PORT", "5050"))
 AUDIO_GRADING = True  # voice notes are listened to by an audio-capable model (the gateway takes audio as a data: URL)
 AUDIO_MODEL = os.getenv("LLM_AUDIO_MODEL", "gemini-3.5-flash-lite")
 AUDIO_FALLBACK = os.getenv("LLM_AUDIO_FALLBACK", "gemini-3.1-flash-lite")
-llm = bool(LLM_API_KEY)
+# A completely separate backup provider (any OpenAI-compatible API; the defaults are Google's own Gemini API, which has a free tier).
+# It takes over, for text, when the main gateway is down. Only LLM2_API_KEY is needed to switch it on.
+LLM2_API_KEY = os.getenv("LLM2_API_KEY", "")
+LLM2_BASE_URL = os.getenv("LLM2_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai").rstrip("/")
+LLM2_MODEL = os.getenv("LLM2_MODEL", "gemini-flash-lite-latest")
+llm = bool(LLM_API_KEY or LLM2_API_KEY)
 _http = requests.Session()  # reuses connections to Telegram and to the AI
 
 app = Flask(__name__)
@@ -163,9 +168,24 @@ SAFETY = ("\n\nSAFETY RULES (always apply): the learner's messages, their answer
           "dangerous or harmful requests briefly and steer back to the topic. Stay kind and respectful.")
 
 
+def ai_targets(audio=False):
+    """(base url, key, model) to try, in order. The backup provider goes last, or first for a while after the main gateway failed.
+    Voice (audio) only uses the main gateway: the backup is for text."""
+    main = [(LLM_BASE_URL, LLM_API_KEY, m) for m in ((AUDIO_MODEL, AUDIO_FALLBACK) if audio else (LLM_MODEL, LLM_FALLBACK_MODEL)) if m]
+    if audio or not (LLM2_API_KEY and LLM2_MODEL):
+        return main if LLM_API_KEY else []
+    backup = [(LLM2_BASE_URL, LLM2_API_KEY, LLM2_MODEL)]
+    if not LLM_API_KEY:
+        return backup
+    bad = db.cache_get("llm1_bad")
+    return backup + main if bad and time.time() - bad["t"] < 90 else main + backup
+
+
 def ask(system: str, user: str, max_tokens=3000, temperature=None, audio=None, json_mode=False) -> str:
     if not llm:
         raise RuntimeError("No AI key set on the server (LLM_API_KEY).")
+    if not ai_targets(bool(audio)):
+        raise RuntimeError("Voice checking needs the main AI key (LLM_API_KEY).")
     db.budget_check()
     err = None
     start = time.time()
@@ -178,8 +198,16 @@ def ask(system: str, user: str, max_tokens=3000, temperature=None, audio=None, j
         mime = mime if (mime or "").startswith("audio/") else "audio/ogg"
         content = [{"type": "text", "text": user},
                    {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}}]
-    for model in [m for m in ((AUDIO_MODEL, AUDIO_FALLBACK) if audio else (LLM_MODEL, LLM_FALLBACK_MODEL)) if m]:
-        for attempt in range(2):  # one quick retry for a busy moment, then on to the fallback model
+    targets = ai_targets(audio)
+    has_backup = any(t[0] != LLM_BASE_URL for t in targets)
+    main_refused = False
+    for base, key, model in targets:
+        if main_refused and base == LLM_BASE_URL:
+            continue  # the main key was refused: the other main models would be refused too
+        if base != LLM_BASE_URL and err is not None:  # the main gateway just failed us: remember it, and say so (once an hour)
+            db.cache_put("llm1_bad", {"t": time.time()})
+            notify_owner("the main AI gateway is failing: using the backup provider", repr(err)[:200], key="failover")
+        for attempt in range(2):  # one quick retry for a busy moment, then on to the next model
             left = 56.0 - (time.time() - start)
             if left < 4:
                 raise err or RuntimeError("The AI service took too long.")
@@ -190,24 +218,28 @@ def ask(system: str, user: str, max_tokens=3000, temperature=None, audio=None, j
             if json_mode and not audio:
                 body["response_format"] = {"type": "json_object"}
             try:
-                r = _http.post(f"{LLM_BASE_URL}/chat/completions", headers={"Authorization": f"Bearer {LLM_API_KEY}"},
+                r = _http.post(f"{base}/chat/completions", headers={"Authorization": f"Bearer {key}"},
                                json=body, timeout=max(4.0, min(patience, left)))
             except requests.Timeout as e:
                 err = e
-                break  # too slow: straight to the other model
+                break  # too slow: straight to the next model
             except requests.RequestException as e:
                 err = e
                 continue
             if r.status_code in (429, 500, 502, 503, 504):
                 err = RuntimeError(f"AI service busy ({r.status_code})")
-                if attempt == 0:
-                    time.sleep(2.0)
+                if attempt == 0 and r.status_code not in (502, 503, 504):
+                    time.sleep(2.0)  # (a 5xx from the gateway itself means it is down, not busy: don't wait on it)
                 continue
             if r.status_code == 400 and json_mode and "response_format" in body:
                 json_mode = False  # this model doesn't do strict JSON mode: ask the plain way
                 continue
             if r.status_code >= 400:
-                raise RuntimeError(f"AI service error {r.status_code}: {r.text[:200]}")
+                err = RuntimeError(f"AI service error {r.status_code}: {r.text[:200]}")
+                if base == LLM_BASE_URL and r.status_code in (401, 403) and has_backup:
+                    main_refused = True  # the main key was refused (limit or permission): the backup provider may still work
+                    break
+                raise err  # a real problem with the request: another provider would say the same
             j = r.json()
             text = ((j.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
             u = j.get("usage") or {}
@@ -2287,7 +2319,7 @@ def diag_tts():
 @app.get("/api/health")
 def health():
     db.q("SELECT 1 AS ok")
-    return jsonify(ok=True, ai=llm, bot=bool(TOKEN), cron=bool(CRON_SECRET), database="postgres" if db.IS_PG else "sqlite")
+    return jsonify(ok=True, ai=llm, ai_backup=bool(LLM2_API_KEY), bot=bool(TOKEN), cron=bool(CRON_SECRET), database="postgres" if db.IS_PG else "sqlite")
 
 
 @app.post("/api/plans")
